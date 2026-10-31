@@ -96,7 +96,7 @@ else:
 
 try:
     model = genai.GenerativeModel(
-        model_name="gemini-3.5-flash-lite",
+        model_name="gemini-pro-latest",
         system_instruction=full_system_instruction
     )
 except Exception as e:
