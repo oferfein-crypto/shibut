@@ -2,6 +2,17 @@ import streamlit as st
 import google.generativeai as genai
 
 st.set_page_config(page_title="מורה פרטי לקורס", page_icon="🎓")
+
+# עיצוב יישור מימין לשמאל (RTL) לעברית
+st.markdown("""
+    <style>
+    body, .stChatMessage, .stChatInput, p, div, span {
+        direction: rtl;
+        text-align: right;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 st.title("🎓 מורה פרטי אישי לקורס")
 
 # בדיקה האם המפתח קיים בהגדרות
@@ -9,13 +20,12 @@ if "GEMINI_API_KEY" not in st.secrets:
     st.error("שגיאה: מפתח ה-GEMINI_API_KEY לא הוגדר בהגדרות ה-Secrets של Streamlit.")
     st.stop()
 
-# הגדרת המפתח
 api_key = st.secrets["GEMINI_API_KEY"]
 genai.configure(api_key=api_key)
 
-# שימוש במודל היציב
+# שימוש במודל ה-Flash Lite המהיר והזמין אצלך
 try:
-    model = genai.GenerativeModel("gemini-3.8-flash")
+    model = genai.GenerativeModel("gemini-3.5-flash-lite")
 except Exception as e:
     st.error(f"שגיאה בטעינת המודל: {e}")
     st.stop()
