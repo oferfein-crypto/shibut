@@ -4,14 +4,21 @@ import google.generativeai as genai
 st.set_page_config(page_title="מורה פרטי לקורס", page_icon="🎓")
 st.title("🎓 מורה פרטי אישי לקורס")
 
-# הגדרת ה-API Key מתוך ההגדרות המאובטחות של Streamlit
+# בדיקה האם המפתח קיים בהגדרות
+if "GEMINI_API_KEY" not in st.secrets:
+    st.error("שגיאה: מפתח ה-GEMINI_API_KEY לא הוגדר בהגדרות ה-Secrets של Streamlit.")
+    st.stop()
+
+# הגדרת המפתח
 api_key = st.secrets["GEMINI_API_KEY"]
 genai.configure(api_key=api_key)
 
-# שימוש במודל היציב והמומלץ לשיחות
-model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash"
-)
+# שימוש במודל היציב
+try:
+    model = genai.GenerativeModel("gemini-1.5-flash")
+except Exception as e:
+    st.error(f"שגיאה בטעינת המודל: {e}")
+    st.stop()
 
 # ניהול היסטוריית השיחה
 if "chat" not in st.session_state:
@@ -27,6 +34,10 @@ if user_input := st.chat_input("שאל שאלה על חומרי הקורס..."):
     with st.chat_message("user"):
         st.markdown(user_input)
     
-    with st.chat_message("assistant"):
-        response = st.session_state.chat.send_message(user_input)
-        st.markdown(response.text)
+    try:
+        with st.chat_message("assistant"):
+            with st.spinner("חושב..."):
+                response = st.session_state.chat.send_message(user_input)
+                st.markdown(response.text)
+    except Exception as e:
+        st.error(f"אירעה שגיאה בשליחת ההודעה לשרת של גוגל: {e}")
