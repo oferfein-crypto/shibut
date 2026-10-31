@@ -25,7 +25,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🎓 מורה פרטי אישי לקורס")
+st.title("🎓 !שיבוט מחקר - המורה הפרטי שלך")
 
 # בדיקה האם המפתח קיים בהגדרות
 if "GEMINI_API_KEY" not in st.secrets:
