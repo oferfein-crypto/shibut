@@ -12,7 +12,7 @@ genai.configure(api_key=api_key)
 # אם הגדרת את ההוראות ב-System Instructions בסטודיו, המודל יידע לעבוד לפיהן.
 # מומלץ להשתמש בגרסת מודל מתקדמת כמו gemini-1.5-pro
 model = genai.GenerativeModel(
-    model_name="gemini-1.5-pro"
+    model_name="gemini-2.5-flash"
 )
 
 # ניהול היסטוריית השיחה של הסטודנט
