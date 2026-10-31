@@ -27,31 +27,84 @@ st.markdown("""
 
 st.title("שיבוט מחקר - המורה הפרטי שלך")
 
-# בדיקה האם המפתח קיים בהגדרות
+# בדיקת מפתח API
 if "GEMINI_API_KEY" not in st.secrets:
-    st.error("שגיאה: מפתח ה-GEMINI_API_KEY לא הוגדר בהגדרות ה-Secrets של Streamlit.")
+    st.error("שגיאה: מפתח ה-GEMINI_API_KEY לא הוגדר בהגדרות ה-Secrets.")
     st.stop()
 
 api_key = st.secrets["GEMINI_API_KEY"]
 genai.configure(api_key=api_key)
 
-# שימוש במודל
-try:
-    model = genai.GenerativeModel("gemini-3.5-flash-lite")
-except Exception as e:
-    st.error(f"שגיאה בטעינת המודל: {e}")
-    st.stop()
+# --- מנגנון אבטחה לסרגל המרצה ---
+is_lecturer = False
+if "LECTURER_PASSWORD" in st.secrets:
+    st.sidebar.title("🔐 כניסת מרצה")
+    entered_password = st.sidebar.text_input("הכנס סיסמת ניהול:", type="password")
+    if entered_password == st.secrets["LECTURER_PASSWORD"]:
+        is_lecturer = True
+        st.sidebar.success("מחובר כמרצה!")
+    elif entered_password:
+        st.sidebar.error("סיסמה שגויה")
 
-# ניהול היסטוריית השיחה
-if "chat" not in st.session_state:
-    st.session_state.chat = model.start_chat(history=[])
+if "lecturer_corrections" not in st.session_state:
+    st.session_state.lecturer_corrections = []
 
-# אזור העלאת קבצים בסרגל הצדי (Sidebar) עם הכותרת המעודכנת
+if is_lecturer:
+    st.sidebar.markdown("---")
+    st.sidebar.title("🔒 אזור בקרה למרצה")
+    new_correction = st.sidebar.text_input("הוסף הערה או תיקון למודל:")
+    if st.sidebar.button("הוסף תיקון למערכת"):
+        if new_correction:
+            st.session_state.lecturer_corrections.append(new_correction)
+            if "chat" in st.session_state:
+                del st.session_state.chat
+            st.sidebar.success("ההערה נוספה ונשמרה!")
+            st.rerun()
+
+    if st.session_state.lecturer_corrections:
+        with st.sidebar.expander(f"📋 תיקונים פעילים ({len(st.session_state.lecturer_corrections)})"):
+            for i, corr in enumerate(st.session_state.lecturer_corrections):
+                st.markdown(f"**{i+1}.** {corr}")
+            if st.button("נקה את כל התיקונים"):
+                st.session_state.lecturer_corrections = []
+                if "chat" in st.session_state:
+                    del st.session_state.chat
+                st.rerun()
+
+# --- אזור העלאת קבצים ---
+st.sidebar.markdown("---")
 st.sidebar.title("📁 העלאת קבצים")
 uploaded_file = st.sidebar.file_uploader(
     "העלה קובץ (PDF, תמונה או טקסט)", 
     type=["pdf", "png", "jpg", "jpeg", "txt"]
 )
+
+# --- הנחיות מערכת קפדניות למניעת שגיאות והמצאת מסיחים ---
+base_instruction = (
+    "אתה מורה פרטי אקדמי מומחה לקורס בשיטות מחקר ופסיכומטריקה. "
+    "חוקי ברזל לפתרון מבחנים ושאלות רב-ברירתיות (אמריקאיות):\n"
+    "1. היצמד אך ורק לטקסט המקורי של השאלה ולמסיחים (אפשרויות התשובה) כפי שהוצגו לך. לעולם אל תמציא מסיחים או אפשרויות שלא קיימים בשאלה.\n"
+    "2. שמור על דיוק מוחלט במושגים מדעיים, שמות חוקרים (למשל קרונבאך) וטרמינולוגיה מקצועית.\n"
+    "3. תן תשובות מנומקות, אקדמיות ומדויקות המושתתות על עקרונות התוקף, המהימנות ותורת המבחנים הקלאסית."
+)
+
+if st.session_state.lecturer_corrections:
+    corrections_block = "\n\nהערות ותיקונים נוספים שהוגדרו על ידי המרצה (יש ליישם תמיד!):\n" + "\n".join([f"- {c}" for c in st.session_state.lecturer_corrections])
+    full_system_instruction = base_instruction + corrections_block
+else:
+    full_system_instruction = base_instruction
+
+try:
+    model = genai.GenerativeModel(
+        model_name="gemini-3.5-flash-lite",
+        system_instruction=full_system_instruction
+    )
+except Exception as e:
+    st.error(f"שגיאה בטעינת המודל: {e}")
+    st.stop()
+
+if "chat" not in st.session_state:
+    st.session_state.chat = model.start_chat(history=[])
 
 file_content_to_send = None
 
@@ -62,13 +115,14 @@ if uploaded_file is not None:
             file_content_to_send = Image.open(uploaded_file)
             st.sidebar.success(f"התמונה '{uploaded_file.name}' נטענה בהצלחה!")
         elif file_ext == "pdf":
+            # טיפ: עבור PDF, אם הטקסט מתהפך, מומלץ להעלות את המבחן כתמונות (צילומי מסך של העמודים) 
+            # אך נשמרת כאן תמיכה בטקסט נקי מבלי היפוך שגוי שמעוות שמות
             reader = pypdf.PdfReader(uploaded_file)
             pdf_text = ""
             for page in reader.pages:
                 text = page.extract_text()
                 if text:
-                    fixed_lines = [line[::-1] for line in text.split('\n')]
-                    pdf_text += "\n".join(fixed_lines) + "\n"
+                    pdf_text += text + "\n"
             file_content_to_send = f"\n[תוכן מקובץ PDF - {uploaded_file.name}]:\n{pdf_text}\n"
             st.sidebar.success(f"קובץ ה-PDF '{uploaded_file.name}' פוענח בהצלחה!")
         elif file_ext == "txt":
@@ -77,7 +131,7 @@ if uploaded_file is not None:
     except Exception as e:
         st.sidebar.error(f"שגיאה בעיבוד הקובץ: {e}")
 
-# הצגת היסטוריית ההודעות (הסתרת טקסט הקובץ הגולמי מהבועות)
+# הצגת היסטוריית השיחה
 for message in st.session_state.chat.history:
     role = "user" if message.role == "user" else "assistant"
     with st.chat_message(role):
@@ -86,7 +140,7 @@ for message in st.session_state.chat.history:
                 if not part.text.startswith("\n[תוכן מקובץ"):
                     st.markdown(part.text)
 
-# תיבת הקלט לסטודנט
+# תיבת הקלט
 if user_input := st.chat_input("שאל שאלה על חומרי הקורס או על הקובץ שהעלאת..."):
     with st.chat_message("user"):
         st.markdown(user_input)
