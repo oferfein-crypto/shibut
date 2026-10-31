@@ -15,7 +15,7 @@ genai.configure(api_key=api_key)
 
 # שימוש במודל היציב
 try:
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-3.8-flash")
 except Exception as e:
     st.error(f"שגיאה בטעינת המודל: {e}")
     st.stop()
