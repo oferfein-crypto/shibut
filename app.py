@@ -71,15 +71,16 @@ if is_lecturer:
                     del st.session_state.chat
                 st.rerun()
 
-# --- אזור העלאת קבצים ---
+# --- אזור העלאת קבצים (כעת תומך בריבוי קבצים) ---
 st.sidebar.markdown("---")
 st.sidebar.title("📁 העלאת קבצים")
-uploaded_file = st.sidebar.file_uploader(
-    "העלה קובץ (PDF, תמונה או טקסט)", 
-    type=["pdf", "png", "jpg", "jpeg", "txt"]
+uploaded_files = st.sidebar.file_uploader(
+    "העלה קבצים (PDF, תמונות או טקסט)", 
+    type=["pdf", "png", "jpg", "jpeg", "txt"],
+    accept_multiple_files=True  # מאפשר בחירת מספר קבצים יחד
 )
 
-# --- הנחיות מערכת קפדניות למניעת שגיאות והמצאת מסיחים ---
+# --- הנחיות מערכת קפדניות ---
 base_instruction = (
     "אתה מורה פרטי אקדמי מומחה לקורס בשיטות מחקר ופסיכומטריקה. "
     "חוקי ברזל לפתרון מבחנים ושאלות רב-ברירתיות (אמריקאיות):\n"
@@ -106,30 +107,33 @@ except Exception as e:
 if "chat" not in st.session_state:
     st.session_state.chat = model.start_chat(history=[])
 
-file_content_to_send = None
+# עיבוד כל הקבצים שהועלו
+files_payload = []
 
-if uploaded_file is not None:
-    file_ext = uploaded_file.name.split('.')[-1].lower()
-    try:
-        if file_ext in ["png", "jpg", "jpeg"]:
-            file_content_to_send = Image.open(uploaded_file)
-            st.sidebar.success(f"התמונה '{uploaded_file.name}' נטענה בהצלחה!")
-        elif file_ext == "pdf":
-            # טיפ: עבור PDF, אם הטקסט מתהפך, מומלץ להעלות את המבחן כתמונות (צילומי מסך של העמודים) 
-            # אך נשמרת כאן תמיכה בטקסט נקי מבלי היפוך שגוי שמעוות שמות
-            reader = pypdf.PdfReader(uploaded_file)
-            pdf_text = ""
-            for page in reader.pages:
-                text = page.extract_text()
-                if text:
-                    pdf_text += text + "\n"
-            file_content_to_send = f"\n[תוכן מקובץ PDF - {uploaded_file.name}]:\n{pdf_text}\n"
-            st.sidebar.success(f"קובץ ה-PDF '{uploaded_file.name}' פוענח בהצלחה!")
-        elif file_ext == "txt":
-            file_content_to_send = f"\n[תוכן מקובץ טקסט - {uploaded_file.name}]:\n{uploaded_file.getvalue().decode('utf-8')}\n"
-            st.sidebar.success(f"קובץ הטקסט '{uploaded_file.name}' נטען בהצלחה!")
-    except Exception as e:
-        st.sidebar.error(f"שגיאה בעיבוד הקובץ: {e}")
+if uploaded_files:
+    for uploaded_file in uploaded_files:
+        file_ext = uploaded_file.name.split('.')[-1].lower()
+        try:
+            if file_ext in ["png", "jpg", "jpeg"]:
+                img = Image.open(uploaded_file)
+                files_payload.append(img)
+            elif file_ext == "pdf":
+                reader = pypdf.PdfReader(uploaded_file)
+                pdf_text = ""
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text:
+                        pdf_text += text + "\n"
+                files_payload.append(f"\n[תוכן מקובץ PDF - {uploaded_file.name}]:\n{pdf_text}\n")
+            elif file_ext == "txt":
+                text_content = uploaded_file.getvalue().decode('utf-8')
+                files_payload.append(f"\n[תוכן מקובץ טקסט - {uploaded_file.name}]:\n{text_content}\n")
+        except Exception as e:
+            st.sidebar.error(f"שגיאה בעיבוד הקובץ {uploaded_file.name}: {e}")
+    
+    if uploaded_files:
+        st.sidebar.success(فوנט=None) # שמירה על ניקיון
+        st.sidebar.info(f"נטענו בהצלחה {len(uploaded_files)} קבצים פעילים.")
 
 # הצגת היסטוריית השיחה
 for message in st.session_state.chat.history:
@@ -141,20 +145,22 @@ for message in st.session_state.chat.history:
                     st.markdown(part.text)
 
 # תיבת הקלט
-if user_input := st.chat_input("שאל שאלה על חומרי הקורס או על הקובץ שהעלאת..."):
+if user_input := st.chat_input("שאל שאלה על חומרי הקורס או על הקבצים שהעלאת..."):
     with st.chat_message("user"):
         st.markdown(user_input)
-        if uploaded_file is not None:
-            st.caption(f"📄 קובץ מצורף פעיל: {uploaded_file.name}")
+        if uploaded_files:
+            file_names = ", ".join([f.name for f in uploaded_files])
+            st.caption(f"📄 קבצים מצורפים פעילים: {file_names}")
 
     try:
         with st.chat_message("assistant"):
             with st.spinner("חושב..."):
+                # הרכבת ההודעה יחד עם כל הקבצים שהועלו
                 payload = [user_input]
-                if file_content_to_send is not None:
-                    payload.append(file_content_to_send)
+                if files_payload:
+                    payload.extend(files_payload)
                 
                 response = st.session_state.chat.send_message(payload)
                 st.markdown(response.text)
     except Exception as e:
-        st.error(f"אירעה שגיאה בשליחת ההודעה לשרת של גוגל: {e}")
+        st.error(f"שגיאה בשליחת ההודעה לשרת של גוגל: {e}")
