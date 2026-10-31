@@ -71,13 +71,13 @@ if is_lecturer:
                     del st.session_state.chat
                 st.rerun()
 
-# --- אזור העלאת קבצים (כעת תומך בריבוי קבצים) ---
+# --- אזור העלאת קבצים (ריבוי קבצים) ---
 st.sidebar.markdown("---")
 st.sidebar.title("📁 העלאת קבצים")
 uploaded_files = st.sidebar.file_uploader(
     "העלה קבצים (PDF, תמונות או טקסט)", 
     type=["pdf", "png", "jpg", "jpeg", "txt"],
-    accept_multiple_files=True  # מאפשר בחירת מספר קבצים יחד
+    accept_multiple_files=True
 )
 
 # --- הנחיות מערכת קפדניות ---
@@ -97,7 +97,7 @@ else:
 
 try:
     model = genai.GenerativeModel(
-        model_name="gemini-pro-latest",
+        model_name="gemini-pro-latest",  # שימוש במודל העדכני לפי בקשתך
         system_instruction=full_system_instruction
     )
 except Exception as e:
@@ -107,7 +107,6 @@ except Exception as e:
 if "chat" not in st.session_state:
     st.session_state.chat = model.start_chat(history=[])
 
-# עיבוד כל הקבצים שהועלו
 files_payload = []
 
 if uploaded_files:
@@ -131,9 +130,7 @@ if uploaded_files:
         except Exception as e:
             st.sidebar.error(f"שגיאה בעיבוד הקובץ {uploaded_file.name}: {e}")
     
-    if uploaded_files:
-        st.sidebar.success(فوנט=None) # שמירה על ניקיון
-        st.sidebar.info(f"נטענו בהצלחה {len(uploaded_files)} קבצים פעילים.")
+    st.sidebar.info(f"נטענו בהצלחה {len(uploaded_files)} קבצים פעילים.")
 
 # הצגת היסטוריית השיחה
 for message in st.session_state.chat.history:
@@ -155,7 +152,6 @@ if user_input := st.chat_input("שאל שאלה על חומרי הקורס או 
     try:
         with st.chat_message("assistant"):
             with st.spinner("חושב..."):
-                # הרכבת ההודעה יחד עם כל הקבצים שהועלו
                 payload = [user_input]
                 if files_payload:
                     payload.extend(files_payload)
@@ -163,4 +159,4 @@ if user_input := st.chat_input("שאל שאלה על חומרי הקורס או 
                 response = st.session_state.chat.send_message(payload)
                 st.markdown(response.text)
     except Exception as e:
-        st.error(f"שגיאה בשליחת ההודעה לשרת של גוגל: {e}")
+        st.error(f"אירעה שגיאה בשליחת ההודעה לשרת של גוגל: {e}")
