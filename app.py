@@ -3,12 +3,25 @@ import google.generativeai as genai
 
 st.set_page_config(page_title="מורה פרטי לקורס", page_icon="🎓")
 
-# עיצוב יישור מימין לשמאל (RTL) לעברית
+# עיצוב מקיף לכפיית כיווניות RTL ויישור לימין לכל רכיבי הטקסט, הרשימות והבועות בצ'אט
 st.markdown("""
     <style>
-    body, .stChatMessage, .stChatInput, p, div, span {
-        direction: rtl;
-        text-align: right;
+    /* הגדרת כל אזור הצ'אט כימין לשמאל */
+    .stChatMessage, .stChatMessage * {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    /* תיקון יישור לרשימות (Bullets ורשימות ממוספרות) */
+    ul, ol, li {
+        direction: rtl !important;
+        text-align: right !important;
+        padding-right: 20px !important;
+        padding-left: 0px !important;
+    }
+    /* תיקון לשדה הקלט של הסטודנט */
+    .stChatInput textarea {
+        direction: rtl !important;
+        text-align: right !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -23,7 +36,7 @@ if "GEMINI_API_KEY" not in st.secrets:
 api_key = st.secrets["GEMINI_API_KEY"]
 genai.configure(api_key=api_key)
 
-# שימוש במודל ה-Flash Lite המהיר והזמין אצלך
+# שימוש במודל ה-Flash Lite המהיר
 try:
     model = genai.GenerativeModel("gemini-3.5-flash-lite")
 except Exception as e:
