@@ -1,9 +1,9 @@
 import streamlit as st
 import google.generativeai as genai
-import tempfile
-import os
+from PIL import Image
+import pypdf
 
-st.set_page_config(page_title="שיבוט מחקר - המורה הפרטי שלך!", page_icon="🎓")
+st.set_page_config(page_title="מורה פרטי לקורס", page_icon="🎓")
 
 # עיצוב כיווניות RTL ויישור לימין
 st.markdown("""
@@ -25,7 +25,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🎓 !שיבוט מחקר - המורה הפרטי שלך")
+st.title("🎓 שיבוט מחקר - המורה הפרטי האישי שלך")
 
 # בדיקה האם המפתח קיים בהגדרות
 if "GEMINI_API_KEY" not in st.secrets:
@@ -46,29 +46,35 @@ except Exception as e:
 if "chat" not in st.session_state:
     st.session_state.chat = model.start_chat(history=[])
 
-# --- הוספת אזור העלאת קבצים בסרגל הצדי (Sidebar) ---
+# אזור העלאת קבצים בסרגל הצדי (Sidebar)
 st.sidebar.title("📁 העלאת חומרי לימוד ומבחנים")
 uploaded_file = st.sidebar.file_uploader(
     "העלה קובץ (PDF, תמונה או טקסט)", 
     type=["pdf", "png", "jpg", "jpeg", "txt"]
 )
 
-file_ref = None
+file_content_to_send = None
+
 if uploaded_file is not None:
-    # שמירה זמנית של הקובץ כדי להעלות אותו לשרת של גוגל
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp:
-        tmp.write(uploaded_file.getvalue())
-        tmp_path = tmp.name
-    
-    # העלאה למודל (נשמר בזיכרון כדי לא לעלות מחדש בכל הודעה)
-    if "uploaded_file_name" not in st.session_state or st.session_state.uploaded_file_name != uploaded_file.name:
-        with st.spinner("מעלה את הקובץ למערכת..."):
-            file_ref = genai.upload_file(tmp_path)
-            st.session_state.file_ref = file_ref
-            st.session_state.uploaded_file_name = uploaded_file.name
-        st.sidebar.success(f"הקובץ '{uploaded_file.name}' הועלה בהצלחה!")
-    else:
-        file_ref = st.session_state.get("file_ref")
+    file_ext = uploaded_file.name.split('.')[-1].lower()
+    try:
+        if file_ext in ["png", "jpg", "jpeg"]:
+            file_content_to_send = Image.open(uploaded_file)
+            st.sidebar.success(f"התמונה '{uploaded_file.name}' נטענה בהצלחה!")
+        elif file_ext == "pdf":
+            reader = pypdf.PdfReader(uploaded_file)
+            pdf_text = ""
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    pdf_text += text + "\n"
+            file_content_to_send = f"\n[תוכן מקובץ PDF - {uploaded_file.name}]:\n{pdf_text}\n"
+            st.sidebar.success(f"קובץ ה-PDF '{uploaded_file.name}' פוענח בהצלחה!")
+        elif file_ext == "txt":
+            file_content_to_send = f"\n[תוכן מקובץ טקסט - {uploaded_file.name}]:\n{uploaded_file.getvalue().decode('utf-8')}\n"
+            st.sidebar.success(f"קובץ הטקסט '{uploaded_file.name}' נטען בהצלחה!")
+    except Exception as e:
+        st.sidebar.error(f"שגיאה בעיבוד הקובץ: {e}")
 
 # הצגת היסטוריית ההודעות
 for message in st.session_state.chat.history:
@@ -83,17 +89,17 @@ if user_input := st.chat_input("שאל שאלה על חומרי הקורס או 
     with st.chat_message("user"):
         st.markdown(user_input)
         if uploaded_file is not None:
-            st.caption(f"📄 קובץ מצורף פעיל: {uploaded_file.name}")
+            st.caption(f"📄 קובץ מצורף: {uploaded_file.name}")
 
     try:
         with st.chat_message("assistant"):
             with st.spinner("חושב..."):
-                # שליחת הטקסט יחד עם הקובץ (אם קיים) למודל
-                content_payload = [user_input]
-                if file_ref is not None:
-                    content_payload.append(file_ref)
+                # שליחת השאלה והקובץ המעובד יחד למודל
+                payload = [user_input]
+                if file_content_to_send is not None:
+                    payload.append(file_content_to_send)
                 
-                response = st.session_state.chat.send_message(content_payload)
+                response = st.session_state.chat.send_message(payload)
                 st.markdown(response.text)
     except Exception as e:
         st.error(f"אירעה שגיאה בשליחת ההודעה לשרת של גוגל: {e}")
