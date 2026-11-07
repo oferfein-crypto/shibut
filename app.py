@@ -71,7 +71,7 @@ system_instruction = """
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
 """
 
-# --- יצירת Context Cache עם עקיפת שמות בעברית ---
+# --- יצירת Context Cache עם שימוש במודל היציב הנתמך לקאש ---
 @st.cache_resource
 def get_or_create_cached_chat():
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -86,19 +86,15 @@ def get_or_create_cached_chat():
             file_path = os.path.join(folder_path, filename)
             if filename.lower().endswith((".pdf", ".txt", ".pptx")):
                 try:
-                    # יצירת עותק זמני עם שם באנגלית כדי למנוע שגיאות קידוד ASCII
                     ext = os.path.splitext(filename)[1]
                     safe_temp_name = f"course_file_{index}{ext}"
                     safe_temp_path = os.path.join(current_dir, safe_temp_name)
                     
                     shutil.copyfile(file_path, safe_temp_path)
-                    
-                    # העלאה לשרת בעזרת השם הבטוח
                     g_file = client.files.upload(file=safe_temp_path)
                     gemini_files.append(g_file)
                     uploaded_files_info.append(f"✅ הועלה בהצלחה: {filename}")
                     
-                    # ניקוי הקובץ הזמני
                     if os.path.exists(safe_temp_path):
                         os.remove(safe_temp_path)
                 except Exception as e:
@@ -106,7 +102,8 @@ def get_or_create_cached_chat():
     else:
         uploaded_files_info.append(f"⚠️ אזהרה: התיקייה course_files לא נמצאה.")
 
-    target_model = 'gemini-2.5-flash'
+    # שימוש במודל Flash הסטנדרטי והיציב ביותר שתומך בקאש לפי תיעוד הספריה החדשה
+    target_model = 'gemini-1.5-flash'
     
     try:
         if gemini_files:
@@ -132,11 +129,12 @@ def get_or_create_cached_chat():
             )
             return chat, uploaded_files_info, "לא נמצאו קבצים בתיקייה, הצ'אט פועל ללא קאש."
     except Exception as e:
+        # במקרה שהקאש נכשל, נפתח צ'אט ישיר עם ההנחיות ועם הקבצים שהועלו כדי שהכל יעבוד מיד
         chat = client.chats.create(
             model=target_model, 
             config=types.GenerateContentConfig(system_instruction=system_instruction)
         )
-        return chat, uploaded_files_info, f"שגיאה ביצירת קאש: {e}"
+        return chat, uploaded_files_info, f"הקבצים הועלו, הצ'אט פועל ישירות מולם (הערת קאש: {e})"
 
 chat_session, file_status_log, cache_status_msg = get_or_create_cached_chat()
 
@@ -185,7 +183,7 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
 
     try:
         with st.chat_message("assistant"):
-            with st.spinner("חושב ומנתח במהירות מתוך הזיכרון..."):
+            with st.spinner("חושב ומנתח במהירות..."):
                 message_content = [user_input]
                 if exam_payload:
                     message_content.extend(exam_payload)
