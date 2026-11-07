@@ -26,7 +26,7 @@ if "GEMINI_API_KEY" not in st.secrets:
 
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
-# --- סרגל צדי: קבצים להעלאה ומצב מרצה מאובטח ---
+# --- סרגל צדי: קבצים להעלאה ומצב מרצה ---
 st.sidebar.markdown("---")
 st.sidebar.title("📁 קבצים להעלאה")
 exam_files = st.sidebar.file_uploader(
@@ -42,7 +42,6 @@ lecturer_mode_checkbox = st.sidebar.checkbox("הפעל מצב מרצה")
 lecturer_authenticated = False
 if lecturer_mode_checkbox:
     entered_password = st.sidebar.text_input("הכנס סיסמת מרצה:", type="password")
-    # בדיקה מול הסיסמה שהוגדרה ב-Secrets של Streamlit
     if "LECTURER_PASSWORD" in st.secrets and entered_password == st.secrets["LECTURER_PASSWORD"]:
         lecturer_authenticated = True
         st.sidebar.success("הזדהות הצליחה!")
@@ -68,23 +67,29 @@ system_instruction = """
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
 """
 
-# --- פונקציית טעינה עם מעקב מפורט למרצה ---
+# --- פונקציית טעינה עם נתיב מוחלט ותמיכה בקבצי course_files ---
 @st.cache_resource
 def get_or_create_cached_model():
-    folder_path = "course_files"
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    folder_path = os.path.join(current_dir, "course_files")
+    
     uploaded_files_info = []
     uploaded_files_for_cache = []
     
     if os.path.exists(folder_path):
-        for filename in os.listdir(folder_path):
+        files = os.listdir(folder_path)
+        for filename in files:
             file_path = os.path.join(folder_path, filename)
-            if filename.lower().endswith((".pdf", ".txt")):
+            # תמיכה ב-PDF, TXT ואפילו PPTX
+            if filename.lower().endswith((".pdf", ".txt", ".pptx")):
                 try:
                     f = genai.upload_file(file_path)
                     uploaded_files_for_cache.append(f)
                     uploaded_files_info.append(f"✅ הועלה בהצלחה: {filename} (מזהה: {f.name})")
                 except Exception as e:
                     uploaded_files_info.append(f"❌ שגיאה בהעלאת {filename}: {e}")
+    else:
+        uploaded_files_info.append(f"⚠️ אזהרה: התיקייה לא נמצאה בנתיב: {folder_path}")
 
     target_model_name = 'gemini-3.8-flash'
     
@@ -97,20 +102,20 @@ def get_or_create_cached_model():
                 contents=uploaded_files_for_cache,
             )
             model = genai.GenerativeModel.from_cached_content(cached_content=cache)
-            return model, uploaded_files_info, "Context Cache נוצר בהצלחה בשרת!"
+            return model, uploaded_files_info, "Context Cache נוצר בהצלחה בשרת עם כל הקבצים!"
         else:
             model = genai.GenerativeModel(model_name=target_model_name, system_instruction=system_instruction)
-            return model, uploaded_files_info, "לא נמצאו קבצים בתיקיית course_files, המודל פועל ללא קאש."
+            return model, uploaded_files_info, "לא נמצאו קבצים בתיקיית course_files."
     except Exception as e:
         model = genai.GenerativeModel(model_name=target_model_name, system_instruction=system_instruction)
-        return model, uploaded_files_info, f"שגיאה ביצירת קאש (עבר למודל רגיל): {e}"
+        return model, uploaded_files_info, f"שגיאה ביצירת קאש: {e}"
 
 model, file_status_log, cache_status_msg = get_or_create_cached_model()
 
 if "chat" not in st.session_state:
     st.session_state.chat = model.start_chat(history=[])
 
-# --- תצוגת לוח הבקרה למרצה (רק אם הזין סיסמה נכונה!) ---
+# --- לוח בקרה למרצה (מוגן בסיסמה) ---
 if lecturer_authenticated:
     st.markdown("---")
     st.subheader("📊 לוח בקרה וניהול למרצה")
@@ -138,7 +143,7 @@ for message in st.session_state.chat.history:
                 with st.chat_message("user" if message.role == "user" else "assistant"):
                     st.markdown(part.text)
 
-# תיבת הקלט
+# תיבת הקלט של המשתמש
 if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
     with st.chat_message("user"):
         st.markdown(user_input)
