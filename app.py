@@ -65,7 +65,7 @@ system_instruction = """
 חוקים והנחיות לגבי חומרי הקורס:
 1. המצגות הן החומר העיקרי והמעודכן ביותר.
 2. יש גם קובץ בשם "שיטות מחקר - מאוחד" שהוא מפורט יותר מהמצגת, אך אם יש סתירה בינו לבין המצגת, העדף את המצגת.
-3. אם יש סתירה בין חומר אחר שאינו מכיר והמצגת, העדף את המצגת.
+3. אם יש סתירה בין חומר אחר שאתה מכיר והמצגת, העדף את המצגת.
 4. בין הקבצים שהועלו יש גם תרגילים ופתרונות להם, למד גם אותם, ומבחנים.
 5. לכל מבחן שתי גרסאות: גרסא מעורבלת וגרסא (נקראת טופס 0) שבה תמיד התשובה הנכונה היא הראשונה (א), אלא אם כן כתוב אחרת בדפי ההסבר על המבחנים.
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
@@ -102,16 +102,16 @@ def get_or_create_course_chat():
     else:
         uploaded_files_info.append(f"⚠️ אזהרה: התיקייה course_files לא נמצאה.")
 
-    target_model = 'gemini-2.5-flash'
+    # שימוש ישיר במודל המעודכן שגוגל דורשת
+    target_model = 'gemini-3.8-flash'
     
-    # פתיחת צ'אט עם צירוף קבצי הקורס ישירות כרקע ראשוני
     try:
         chat_config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             temperature=0.3
         )
         chat = client.chats.create(model=target_model, config=chat_config)
-        return chat, gemini_files, uploaded_files_info, "הקבצים הועלו בהצלחה וזמינים למורה הפרטי!"
+        return chat, gemini_files, uploaded_files_info, "הקבצים הועלו בהצלחה וזמינים למורה הפרטי עם מודל 3.8 Flash!"
     except Exception as e:
         chat = client.chats.create(model=target_model)
         return chat, gemini_files, uploaded_files_info, f"שגיאה באתחול הצ'אט: {e}"
@@ -164,9 +164,7 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
     try:
         with st.chat_message("assistant"):
             with st.spinner("חושב ומנתח מתוך חומרי הקורס..."):
-                # שילוב קבצי הקורס ברקע יחד עם השאלה וקבצי הסטודנט אם ישנם
                 message_content = []
-                # הוספת קבצי הקורס כהקשר להודעה הראשונה או לכל שאלה
                 if course_files_payload and len(chat_session.get_history()) == 0:
                     message_content.extend(course_files_payload)
                 
