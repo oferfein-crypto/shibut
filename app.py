@@ -97,7 +97,7 @@ else:
 
 try:
     model = genai.GenerativeModel(
-        model_name="gemini-pro-latest",  # שימוש במודל העדכני לפי בקשתך
+        model_name="gemini-3.8-flash",  # שימוש במודל 3.8 flash
         system_instruction=full_system_instruction
     )
 except Exception as e:
