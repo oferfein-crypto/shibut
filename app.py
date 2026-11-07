@@ -57,7 +57,7 @@ system_instruction = """
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
 """
 
-# --- יצירת מודל יציב (שימוש במודל Flash נתמך) ---
+# --- יצירת מודל מול gemini-3.8-flash עם זיכרון מטמון ---
 @st.cache_resource
 def get_or_create_cached_model():
     folder_path = "course_files"
@@ -73,8 +73,8 @@ def get_or_create_cached_model():
                 except Exception as e:
                     print(f"שגיאה בהעלאת {filename}: {e}")
 
-    # שימוש במודל העדכני והנתמך ביותר בקריאות API
-    target_model_name = 'gemini-2.5-flash'
+    # שימוש ישיר במודל שגוגל דורשת
+    target_model_name = 'gemini-3.8-flash'
     
     try:
         if uploaded_files_for_cache:
@@ -90,7 +90,7 @@ def get_or_create_cached_model():
             return genai.GenerativeModel(model_name=target_model_name, system_instruction=system_instruction)
     except Exception as e:
         # פולבק למודל בסיסי במקרה של תקלה ביצירת קאש
-        return genai.GenerativeModel(model_name="gemini-flash", system_instruction=system_instruction)
+        return genai.GenerativeModel(model_name=target_model_name, system_instruction=system_instruction)
 
 model = get_or_create_cached_model()
 
@@ -99,7 +99,7 @@ if "chat" not in st.session_state:
 
 if lecturer_mode:
     st.subheader("📊 לוח בקרה למרצה")
-    st.success("מצב מרצה פעיל: המערכת פועלת מול שרתי גוגל.")
+    st.success("מצב מרצה פעיל: המערכת פועלת מול שרתי גוגל עם מודל 3.8 Flash.")
 
 # עיבוד קבצים שהסטודנט מעלה בצד
 exam_payload = []
