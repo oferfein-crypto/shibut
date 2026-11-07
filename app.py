@@ -1,7 +1,5 @@
 import streamlit as st
 import google.generativeai as genai
-from PIL import Image
-import pypdf
 import os
 
 st.set_page_config(page_title="שיבוט מחקר - המורה הפרטי שלך", page_icon="🎓")
@@ -22,42 +20,11 @@ st.markdown("""
 
 st.title("שיבוט מחקר - המורה הפרטי שלך")
 
-# בדיקת מפתח API
 if "GEMINI_API_KEY" not in st.secrets:
     st.error("שגיאה: מפתח ה-GEMINI_API_KEY לא הוגדר בהגדרות ה-Secrets.")
     st.stop()
 
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-
-# --- טעינה אוטומטית של קבצי הקורס מתיקיית course_files ב-GitHub ---
-@st.cache_resource
-def load_course_context():
-    folder_path = "course_files"
-    combined_course_text = ""
-    
-    if os.path.exists(folder_path):
-        files = os.listdir(folder_path)
-        for filename in files:
-            file_path = os.path.join(folder_path, filename)
-            if filename.lower().endswith(".pdf"):
-                try:
-                    reader = pypdf.PdfReader(file_path)
-                    for page in reader.pages:
-                        text = page.extract_text()
-                        if text:
-                            combined_course_text += f"\n[מתוך קובץ הקורס: {filename}]:\n" + text + "\n"
-                except Exception as e:
-                    print(f"שגיאה בקריאת הקובץ {filename}: {e}")
-            elif filename.lower().endswith(".txt"):
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        combined_course_text += f"\n[מתוך קובץ הקורס: {filename}]:\n" + f.read() + "\n"
-                except Exception as e:
-                    print(f"שגיאה בקריאת הקובץ {filename}: {e}")
-                    
-    return combined_course_text
-
-course_context = load_course_context()
 
 # --- סרגל צדי: העלאת קבצים ומצב מרצה ---
 st.sidebar.markdown("---")
@@ -72,11 +39,8 @@ st.sidebar.markdown("---")
 st.sidebar.title("🛠️ הגדרות כניסת מרצה")
 lecturer_mode = st.sidebar.checkbox("הפעל מצב מרצה (ניהול ובקרה)")
 
-if lecturer_mode:
-    st.sidebar.success("מצב מרצה פעיל: מוצגים נתוני מערכת למטה.")
-
-# --- הנחיות המערכת ---
-system_instruction = f"""
+# --- הנחיות המערכת שלך ---
+system_instruction = """
 תפקיד ומטרה:
 אתה מורה פרטי אקדמי ועוזר הוראה לקורס אקדמי בשיטות מחקר לתלמידי תואר ראשון בפסיכולוגיה. תפקידך לסייע לסטודנטים להבין את החומר, להתכונן למבחנים ולתרגל מושגים.
 
@@ -87,58 +51,65 @@ system_instruction = f"""
 חוקים והנחיות לגבי חומרי הקורס:
 1. המצגות הן החומר העיקרי והמעודכן ביותר.
 2. יש גם קובץ בשם "שיטות מחקר - מאוחד" שהוא מפורט יותר מהמצגת, אך אם יש סתירה בינו לבין המצגת, העדף את המצגת.
-3. אם יש סתירה בין חומר אחר שאתה מכיר והמצגת, העדף את המצגת.
+3. אם יש סתירה בין חומר אחר שאינו מכיר והמצגת, העדף את המצגת.
 4. בין הקבצים שהועלו יש גם תרגילים ופתרונות להם, למד גם אותם, ומבחנים.
 5. לכל מבחן שתי גרסאות: גרסא מעורבלת וגרסא (נקראת טופס 0) שבה תמיד התשובה הנכונה היא הראשונה (א), אלא אם כן כתוב אחרת בדפי ההסבר על המבחנים.
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
-
-להלן תוכן חומרי הקורס שנטענו למערכת:
-{course_context}
 """
 
+# --- העלאה חד-פעמית של קבצי הקורס ויצירת Cache בשרתי גוגל ---
 @st.cache_resource
-def init_model(sys_instruct):
-    model = genai.GenerativeModel(
-        model_name="gemini-3.8-flash",  
-        system_instruction=sys_instruct
-    )
-    return model
+def get_or_create_cached_model():
+    folder_path = "course_files"
+    uploaded_files_for_cache = []
+    
+    # מעלים את הקבצים מתיקיית הגיטאהרב לשרת של גוגל פעם אחת בלבד
+    if os.path.exists(folder_path):
+        for filename in os.listdir(folder_path):
+            file_path = os.path.join(folder_path, filename)
+            if filename.lower().endswith((".pdf", ".txt")):
+                try:
+                    f = genai.upload_file(file_path)
+                    uploaded_files_for_cache.append(f)
+                except Exception as e:
+                    print(f"שגיאה בהעלאת {filename} לשרת: {e}")
 
-model = init_model(system_instruction)
+    # יצירת זיכרון המטמון (Cache) בשרתי גוגל
+    # מודל 3.8 / 1.5 Flash תומך באופן מלא ב-Context Caching
+    try:
+        cache = genai.caching.CachedContent.create(
+            model='models/gemini-1.5-flash', # או המודל הרצוי
+            display_name='course_cache_research_methods',
+            system_instruction=system_instruction,
+            contents=uploaded_files_for_cache,
+        )
+        # טעינת המודל ישירות מתוך ה-Cache השמור
+        model = genai.GenerativeModel.from_cached_content(cached_content=cache)
+        return model
+    except Exception as e:
+        # גיבוי למקרה שהקאש לא זמין
+        print(f"שגיאה ביצירת קאש, עובר למודל רגיל: {e}")
+        return genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=system_instruction)
+
+model = get_or_create_cached_model()
 
 if "chat" not in st.session_state:
     st.session_state.chat = model.start_chat(history=[])
 
-# אם מצב מרצה פעיל, נוכל להציג מידע ניהולי למרצה
 if lecturer_mode:
     st.subheader("📊 לוח בקרה למרצה")
-    st.write(f"אורך טקסט חומרי הקורס הכללי הנטען: {len(course_context)} תווים.")
-    if course_context:
-        with st.expander("הצג תצוגה מקדימה של חומרי הקורס הנטענים"):
-            st.text(course_context[:1000] + "\n...(מוצג חלקית)...")
+    st.success("מצב מרצה פעיל: הקבצים טעונים בזיכרון המטמון של המודל בשרתי גוגל.")
 
-# עיבוד קבצים נקודתיים שהסטודנט/מרצה מעלה בצד
+# עיבוד קבצים שהסטודנט מעלה בצד (מבחנים נקודתיים)
 exam_payload = []
 if exam_files:
     for uploaded_file in exam_files:
-        file_ext = uploaded_file.name.split('.')[-1].lower()
         try:
-            if file_ext in ["png", "jpg", "jpeg"]:
-                img = Image.open(uploaded_file)
-                exam_payload.append(img)
-            elif file_ext == "pdf":
-                reader = pypdf.PdfReader(uploaded_file)
-                pdf_text = ""
-                for page in reader.pages:
-                    text = page.extract_text()
-                    if text:
-                        pdf_text += text + "\n"
-                exam_payload.append(f"\n[קובץ שהועלה - {uploaded_file.name}]:\n{pdf_text}\n")
-            elif file_ext == "txt":
-                text_content = uploaded_file.getvalue().decode('utf-8')
-                exam_payload.append(f"\n[טקסט שהועלה - {uploaded_file.name}]:\n{text_content}\n")
+            # העלאה זמנית של קובץ הסטודנט למודל עבור השאלה הנוכחית בלבד
+            temp_file = genai.upload_file(uploaded_file)
+            exam_payload.append(temp_file)
         except Exception as e:
-            st.sidebar.error(f"שגיאה בעיבוד הקובץ {uploaded_file.name}: {e}")
+            st.sidebar.error(f"שגיאה בהעלאת הקובץ {uploaded_file.name}: {e}")
 
 # הצגת היסטוריית השיחה
 for message in st.session_state.chat.history:
@@ -148,7 +119,7 @@ for message in st.session_state.chat.history:
                 with st.chat_message("user" if message.role == "user" else "assistant"):
                     st.markdown(part.text)
 
-# תיבת הקלט של המשתמש
+# תיבת הקלט של הסטודנט
 if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
     with st.chat_message("user"):
         st.markdown(user_input)
@@ -158,7 +129,7 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
 
     try:
         with st.chat_message("assistant"):
-            with st.spinner("חושב ומנתח בהתאם לחומרי הקורס..."):
+            with st.spinner("חושב ומנתח במהירות מתוך זיכרון המטמון..."):
                 payload = [user_input]
                 if exam_payload:
                     payload.extend(exam_payload)
