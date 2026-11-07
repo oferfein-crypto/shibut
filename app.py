@@ -1,5 +1,6 @@
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import os
 
 st.set_page_config(page_title="שיבוט מחקר - המורה הפרטי שלך", page_icon="🎓")
@@ -24,9 +25,8 @@ if "GEMINI_API_KEY" not in st.secrets:
     st.error("שגיאה: מפתח ה-GEMINI_API_KEY לא הוגדר בהגדרות ה-Secrets.")
     st.stop()
 
-# הגדרת המפתח (תומך כעת במפתחות ה-AQ החדשים)
-api_key = st.secrets["GEMINI_API_KEY"]
-genai.configure(api_key=api_key)
+# אתחול הלקוח לפי הספריה החדשה
+client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 
 # --- סרגל צדי: קבצים להעלאה ומצב מרצה ---
 st.sidebar.markdown("---")
@@ -69,14 +69,14 @@ system_instruction = """
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
 """
 
-# --- פונקציית טעינה עם טיפול מותאם למפתחות החדשים ---
+# --- יצירת Context Cache בעזרת הספריה החדשה ---
 @st.cache_resource
-def get_or_create_cached_model():
+def get_or_create_cached_chat():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     folder_path = os.path.join(current_dir, "course_files")
     
     uploaded_files_info = []
-    uploaded_files_for_cache = []
+    gemini_files = []
     
     if os.path.exists(folder_path):
         files = os.listdir(folder_path)
@@ -84,37 +84,45 @@ def get_or_create_cached_model():
             file_path = os.path.join(folder_path, filename)
             if filename.lower().endswith((".pdf", ".txt", ".pptx")):
                 try:
-                    f = genai.upload_file(file_path)
-                    uploaded_files_for_cache.append(f)
-                    uploaded_files_info.append(f"✅ הועלה בהצלחה: {filename} (מזהה: {f.name})")
+                    # העלאת קבצים לספריה החדשה
+                    g_file = client.files.upload(file=file_path)
+                    gemini_files.append(g_file)
+                    uploaded_files_info.append(f"✅ הועלה בהצלחה: {filename}")
                 except Exception as e:
                     uploaded_files_info.append(f"❌ שגיאה בהעלאת {filename}: {e}")
     else:
-        uploaded_files_info.append(f"⚠️ אזהרה: התיקייה לא נמצאה בנתיב: {folder_path}")
+        uploaded_files_info.append(f"⚠️ אזהרה: התיקייה course_files לא נמצאה.")
 
-    target_model_name = 'gemini-3.8-flash'
+    target_model = 'gemini-2.5-flash'  # או gemini-3.8-flash לפי הצורך
     
     try:
-        if uploaded_files_for_cache:
-            cache = genai.caching.CachedContent.create(
-                model=target_model_name,
-                display_name='course_cache_research_methods',
-                system_instruction=system_instruction,
-                contents=uploaded_files_for_cache,
+        if gemini_files:
+            # יצירת קאש בתחביר של google-genai החדשה
+            cache = client.caches.create(
+                model=target_model,
+                config=types.CreateCachedContentConfig(
+                    display_name='research_methods_cache',
+                    system_instruction=system_instruction,
+                    contents=gemini_files,
+                    ttl="3600s" # זמן תפוגה לקאש
+                )
             )
-            model = genai.GenerativeModel.from_cached_content(cached_content=cache)
-            return model, uploaded_files_info, "Context Cache נוצר בהצלחה בשרת עם כל הקבצים!"
+            # יצירת צ'אט מבוסס קאש
+            chat = client.chats.create(
+                model=target_model,
+                config=types.GenerateContentConfig(
+                    cached_content=cache.name
+                )
+            )
+            return chat, uploaded_files_info, "Context Cache נוצר בהצלחה מלאה בשרת!"
         else:
-            model = genai.GenerativeModel(model_name=target_model_name, system_instruction=system_instruction)
-            return model, uploaded_files_info, "לא נמצאו קבצים בתיקיית course_files."
+            chat = client.chats.create(model=target_model, config=types.GenerateContentConfig(system_instruction=system_instruction))
+            return chat, uploaded_files_info, "לא נמצאו קבצים בתיקייה, הצאט פועל ללא קאש."
     except Exception as e:
-        model = genai.GenerativeModel(model_name=target_model_name, system_instruction=system_instruction)
-        return model, uploaded_files_info, f"שגיאה ביצירת קאש (עובר למודל רגיל): {e}"
+        chat = client.chats.create(model=target_model, config=types.GenerateContentConfig(system_instruction=system_instruction))
+        return chat, uploaded_files_info, f"שגיאה ביצירת קאש: {e}"
 
-model, file_status_log, cache_status_msg = get_or_create_cached_model()
-
-if "chat" not in st.session_state:
-    st.session_state.chat = model.start_chat(history=[])
+chat_session, file_status_log, cache_status_msg = get_or_create_cached_chat()
 
 # --- לוח בקרה למרצה (מוגן בסיסמה) ---
 if lecturer_authenticated:
@@ -126,23 +134,32 @@ if lecturer_authenticated:
         st.text(log_item)
     st.markdown("---")
 
-# עיבוד קבצים שהסטודנט מעלה בצד
+# הצגת היסטוריית ההודעות (נתמך בספריה החדשה)
+for message in chat_session.get_history():
+    role = "user" if message.role == "user" else "assistant"
+    with st.chat_message(role):
+        for part in message.parts:
+            if hasattr(part, "text") and part.text:
+                st.markdown(part.text)
+
+# עיבוד קבצים שהסטודנט מעלה בצד (מבחנים נקודתיים)
 exam_payload = []
 if exam_files:
     for uploaded_file in exam_files:
         try:
-            temp_file = genai.upload_file(uploaded_file)
-            exam_payload.append(temp_file)
+            # שמירה זמנית כדי להעלות ללקוח החדש
+            temp_path = os.path.join(".", uploaded_file.name)
+            with open(temp_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            
+            g_uploaded = client.files.upload(file=temp_path)
+            exam_payload.append(g_uploaded)
+            
+            # ניקוי קובץ זמני
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
         except Exception as e:
             st.sidebar.error(f"שגיאה בהעלאת הקובץ {uploaded_file.name}: {e}")
-
-# הצגת היסטוריית השיחה
-for message in st.session_state.chat.history:
-    if message.role in ["user", "model"]:
-        for part in message.parts:
-            if hasattr(part, "text") and part.text:
-                with st.chat_message("user" if message.role == "user" else "assistant"):
-                    st.markdown(part.text)
 
 # תיבת הקלט של המשתמש
 if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
@@ -155,11 +172,12 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
     try:
         with st.chat_message("assistant"):
             with st.spinner("חושב ומנתח במהירות מתוך הזיכרון..."):
-                payload = [user_input]
+                # בניית הפיילוט לשליחה
+                message_content = [user_input]
                 if exam_payload:
-                    payload.extend(exam_payload)
+                    message_content.extend(exam_payload)
                 
-                response = st.session_state.chat.send_message(payload)
+                response = chat_session.send_message(message_content)
                 st.markdown(response.text)
     except Exception as e:
         st.error(f"אירעה שגיאה בשליחת ההודעה לשרת: {e}")
