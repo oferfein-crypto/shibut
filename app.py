@@ -3,6 +3,7 @@ from google import genai
 from google.genai import types
 import pypdf
 import os
+import shutil
 
 st.set_page_config(page_title="שיבוט מחקר - המורה הפרטי שלך", page_icon="🎓")
 
@@ -70,7 +71,7 @@ system_instruction = """
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
 """
 
-# --- יצירת Context Cache ובדיקת קבצים ---
+# --- יצירת Context Cache עם עקיפת שמות בעברית ---
 @st.cache_resource
 def get_or_create_cached_chat():
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -81,13 +82,25 @@ def get_or_create_cached_chat():
     
     if os.path.exists(folder_path):
         files = os.listdir(folder_path)
-        for filename in files:
+        for index, filename in enumerate(files):
             file_path = os.path.join(folder_path, filename)
             if filename.lower().endswith((".pdf", ".txt", ".pptx")):
                 try:
-                    g_file = client.files.upload(file=file_path)
+                    # יצירת עותק זמני עם שם באנגלית כדי למנוע שגיאות קידוד ASCII
+                    ext = os.path.splitext(filename)[1]
+                    safe_temp_name = f"course_file_{index}{ext}"
+                    safe_temp_path = os.path.join(current_dir, safe_temp_name)
+                    
+                    shutil.copyfile(file_path, safe_temp_path)
+                    
+                    # העלאה לשרת בעזרת השם הבטוח
+                    g_file = client.files.upload(file=safe_temp_path)
                     gemini_files.append(g_file)
                     uploaded_files_info.append(f"✅ הועלה בהצלחה: {filename}")
+                    
+                    # ניקוי הקובץ הזמני
+                    if os.path.exists(safe_temp_path):
+                        os.remove(safe_temp_path)
                 except Exception as e:
                     uploaded_files_info.append(f"❌ שגיאה בהעלאת {filename}: {e}")
     else:
@@ -137,7 +150,7 @@ if lecturer_authenticated:
         st.text(log_item)
     st.markdown("---")
 
-# הצגת היסטוריית השיחה בספריה החדשה
+# הצגת היסטוריית השיחה
 for message in chat_session.get_history():
     role = "user" if message.role == "user" else "assistant"
     with st.chat_message(role):
@@ -150,7 +163,7 @@ exam_payload = []
 if exam_files:
     for uploaded_file in exam_files:
         try:
-            temp_path = os.path.join(".", uploaded_file.name)
+            temp_path = os.path.join(".", "student_upload_" + uploaded_file.name)
             with open(temp_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             
