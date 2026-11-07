@@ -59,16 +59,23 @@ def load_course_context():
 
 course_context = load_course_context()
 
-# --- אזור העלאת קבצים נקודתיים לסטודנט (למשל מבחן ספציפי לתרגול) ---
+# --- סרגל צדי: העלאת קבצים ומצב מרצה ---
 st.sidebar.markdown("---")
-st.sidebar.title("📁 העלאת מבחן לתרגול")
+st.sidebar.title("📁 קבצים להעלאה")
 exam_files = st.sidebar.file_uploader(
-    "העלה מבחן נקודתי שתרצה עזרה בפתרונו", 
+    "העלה מבחן, תרגיל, שאלה או כל קובץ אחר", 
     type=["pdf", "png", "jpg", "jpeg", "txt"],
     accept_multiple_files=True
 )
 
-# --- הנחיות המערכת החדשות והמדויקות ---
+st.sidebar.markdown("---")
+st.sidebar.title("🛠️ הגדרות כניסת מרצה")
+lecturer_mode = st.sidebar.checkbox("הפעל מצב מרצה (ניהול ובקרה)")
+
+if lecturer_mode:
+    st.sidebar.success("מצב מרצה פעיל: מוצגים נתוני מערכת למטה.")
+
+# --- הנחיות המערכת ---
 system_instruction = f"""
 תפקיד ומטרה:
 אתה מורה פרטי אקדמי ועוזר הוראה לקורס אקדמי בשיטות מחקר לתלמידי תואר ראשון בפסיכולוגיה. תפקידך לסייע לסטודנטים להבין את החומר, להתכונן למבחנים ולתרגל מושגים.
@@ -82,7 +89,7 @@ system_instruction = f"""
 2. יש גם קובץ בשם "שיטות מחקר - מאוחד" שהוא מפורט יותר מהמצגת, אך אם יש סתירה בינו לבין המצגת, העדף את המצגת.
 3. אם יש סתירה בין חומר אחר שאתה מכיר והמצגת, העדף את המצגת.
 4. בין הקבצים שהועלו יש גם תרגילים ופתרונות להם, למד גם אותם, ומבחנים.
-5. לכל מבחן שתי גרסאות: גרסא מעורבלת וגרסא (נקראת טופס 0) שבה תמיד התשובה הנכונה هي הראשונה (א), אלא אם כן כתוב אחרת בדפי ההסבר על המבחנים.
+5. לכל מבחן שתי גרסאות: גרסא מעורבלת וגרסא (נקראת טופס 0) שבה תמיד התשובה הנכונה היא הראשונה (א), אלא אם כן כתוב אחרת בדפי ההסבר על המבחנים.
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
 
 להלן תוכן חומרי הקורס שנטענו למערכת:
@@ -92,7 +99,7 @@ system_instruction = f"""
 @st.cache_resource
 def init_model(sys_instruct):
     model = genai.GenerativeModel(
-        model_name="gemini-pro-latest",  # או gemini-3.8-flash לפי בחירתך
+        model_name="gemini-3.8-flash",  
         system_instruction=sys_instruct
     )
     return model
@@ -102,7 +109,15 @@ model = init_model(system_instruction)
 if "chat" not in st.session_state:
     st.session_state.chat = model.start_chat(history=[])
 
-# עיבוד מבחן נקודתי שהסטודנט מעלה בצד (אם העלה)
+# אם מצב מרצה פעיל, נוכל להציג מידע ניהולי למרצה
+if lecturer_mode:
+    st.subheader("📊 לוח בקרה למרצה")
+    st.write(f"אורך טקסט חומרי הקורס הכללי הנטען: {len(course_context)} תווים.")
+    if course_context:
+        with st.expander("הצג תצוגה מקדימה של חומרי הקורס הנטענים"):
+            st.text(course_context[:1000] + "\n...(מוצג חלקית)...")
+
+# עיבוד קבצים נקודתיים שהסטודנט/מרצה מעלה בצד
 exam_payload = []
 if exam_files:
     for uploaded_file in exam_files:
@@ -118,7 +133,7 @@ if exam_files:
                     text = page.extract_text()
                     if text:
                         pdf_text += text + "\n"
-                exam_payload.append(f"\n[מבחן/תרגיל שהועלה על ידי הסטודנט - {uploaded_file.name}]:\n{pdf_text}\n")
+                exam_payload.append(f"\n[קובץ שהועלה - {uploaded_file.name}]:\n{pdf_text}\n")
             elif file_ext == "txt":
                 text_content = uploaded_file.getvalue().decode('utf-8')
                 exam_payload.append(f"\n[טקסט שהועלה - {uploaded_file.name}]:\n{text_content}\n")
@@ -133,13 +148,13 @@ for message in st.session_state.chat.history:
                 with st.chat_message("user" if message.role == "user" else "assistant"):
                     st.markdown(part.text)
 
-# תיבת הקלט של הסטודנט
+# תיבת הקלט של המשתמש
 if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
     with st.chat_message("user"):
         st.markdown(user_input)
         if exam_files:
             file_names = ", ".join([f.name for f in exam_files])
-            st.caption(f"📄 מבחן מצורף: {file_names}")
+            st.caption(f"📄 קבצים מצורפים: {file_names}")
 
     try:
         with st.chat_message("assistant"):
