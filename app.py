@@ -65,15 +65,15 @@ system_instruction = """
 חוקים והנחיות לגבי חומרי הקורס:
 1. המצגות הן החומר העיקרי והמעודכן ביותר.
 2. יש גם קובץ בשם "שיטות מחקר - מאוחד" שהוא מפורט יותר מהמצגת, אך אם יש סתירה בינו לבין המצגת, העדף את המצגת.
-3. אם יש סתירה בין חומר אחר שאתה מכיר והמצגת, העדף את המצגת.
+3. אם יש סתירה בין חומר אחר שאינו מכיר והמצגת, העדף את המצגת.
 4. בין הקבצים שהועלו יש גם תרגילים ופתרונות להם, למד גם אותם, ומבחנים.
 5. לכל מבחן שתי גרסאות: גרסא מעורבלת וגרסא (נקראת טופס 0) שבה תמיד התשובה הנכונה היא הראשונה (א), אלא אם כן כתוב אחרת בדפי ההסבר על המבחנים.
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
 """
 
-# --- יצירת Context Cache עם שימוש במודל היציב הנתמך לקאש ---
+# --- טעינת הקבצים והעלאתם הישירה לשרת ---
 @st.cache_resource
-def get_or_create_cached_chat():
+def get_or_create_course_chat():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     folder_path = os.path.join(current_dir, "course_files")
     
@@ -93,7 +93,7 @@ def get_or_create_cached_chat():
                     shutil.copyfile(file_path, safe_temp_path)
                     g_file = client.files.upload(file=safe_temp_path)
                     gemini_files.append(g_file)
-                    uploaded_files_info.append(f"✅ הועלה בהצלחה: {filename}")
+                    uploaded_files_info.append(f"✅ הועלה בהצלחה לשרת: {filename}")
                     
                     if os.path.exists(safe_temp_path):
                         os.remove(safe_temp_path)
@@ -102,47 +102,27 @@ def get_or_create_cached_chat():
     else:
         uploaded_files_info.append(f"⚠️ אזהרה: התיקייה course_files לא נמצאה.")
 
-    # שימוש במודל Flash הסטנדרטי והיציב ביותר שתומך בקאש לפי תיעוד הספריה החדשה
-    target_model = 'gemini-1.5-flash'
+    target_model = 'gemini-2.5-flash'
     
+    # פתיחת צ'אט עם צירוף קבצי הקורס ישירות כרקע ראשוני
     try:
-        if gemini_files:
-            cache = client.caches.create(
-                model=target_model,
-                config=types.CreateCachedContentConfig(
-                    display_name='research_methods_cache',
-                    system_instruction=system_instruction,
-                    contents=gemini_files,
-                )
-            )
-            chat = client.chats.create(
-                model=target_model,
-                config=types.GenerateContentConfig(
-                    cached_content=cache.name
-                )
-            )
-            return chat, uploaded_files_info, "Context Cache נוצר בהצלחה מלאה בשרת!"
-        else:
-            chat = client.chats.create(
-                model=target_model, 
-                config=types.GenerateContentConfig(system_instruction=system_instruction)
-            )
-            return chat, uploaded_files_info, "לא נמצאו קבצים בתיקייה, הצ'אט פועל ללא קאש."
-    except Exception as e:
-        # במקרה שהקאש נכשל, נפתח צ'אט ישיר עם ההנחיות ועם הקבצים שהועלו כדי שהכל יעבוד מיד
-        chat = client.chats.create(
-            model=target_model, 
-            config=types.GenerateContentConfig(system_instruction=system_instruction)
+        chat_config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=0.3
         )
-        return chat, uploaded_files_info, f"הקבצים הועלו, הצ'אט פועל ישירות מולם (הערת קאש: {e})"
+        chat = client.chats.create(model=target_model, config=chat_config)
+        return chat, gemini_files, uploaded_files_info, "הקבצים הועלו בהצלחה וזמינים למורה הפרטי!"
+    except Exception as e:
+        chat = client.chats.create(model=target_model)
+        return chat, gemini_files, uploaded_files_info, f"שגיאה באתחול הצ'אט: {e}"
 
-chat_session, file_status_log, cache_status_msg = get_or_create_cached_chat()
+chat_session, course_files_payload, file_status_log, status_msg = get_or_create_course_chat()
 
 # --- לוח בקרה למרצה ---
 if lecturer_authenticated:
     st.markdown("---")
     st.subheader("📊 לוח בקרה וניהול למרצה")
-    st.info(cache_status_msg)
+    st.success(status_msg)
     st.write("**סטטוס קבצי הקורס בתיקייה:**")
     for log_item in file_status_log:
         st.text(log_item)
@@ -173,7 +153,7 @@ if exam_files:
         except Exception as e:
             st.sidebar.error(f"שגיאה בהעלאת הקובץ {uploaded_file.name}: {e}")
 
-# תיבת הקלט
+# תיבת הקלט של המשתמש
 if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
     with st.chat_message("user"):
         st.markdown(user_input)
@@ -183,8 +163,14 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
 
     try:
         with st.chat_message("assistant"):
-            with st.spinner("חושב ומנתח במהירות..."):
-                message_content = [user_input]
+            with st.spinner("חושב ומנתח מתוך חומרי הקורס..."):
+                # שילוב קבצי הקורס ברקע יחד עם השאלה וקבצי הסטודנט אם ישנם
+                message_content = []
+                # הוספת קבצי הקורס כהקשר להודעה הראשונה או לכל שאלה
+                if course_files_payload and len(chat_session.get_history()) == 0:
+                    message_content.extend(course_files_payload)
+                
+                message_content.append(user_input)
                 if exam_payload:
                     message_content.extend(exam_payload)
                 
