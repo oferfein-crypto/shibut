@@ -24,7 +24,9 @@ if "GEMINI_API_KEY" not in st.secrets:
     st.error("שגיאה: מפתח ה-GEMINI_API_KEY לא הוגדר בהגדרות ה-Secrets.")
     st.stop()
 
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+# הגדרת המפתח (תומך כעת במפתחות ה-AQ החדשים)
+api_key = st.secrets["GEMINI_API_KEY"]
+genai.configure(api_key=api_key)
 
 # --- סרגל צדי: קבצים להעלאה ומצב מרצה ---
 st.sidebar.markdown("---")
@@ -67,7 +69,7 @@ system_instruction = """
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
 """
 
-# --- פונקציית טעינה עם נתיב מוחלט ותמיכה בקבצי course_files ---
+# --- פונקציית טעינה עם טיפול מותאם למפתחות החדשים ---
 @st.cache_resource
 def get_or_create_cached_model():
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -80,7 +82,6 @@ def get_or_create_cached_model():
         files = os.listdir(folder_path)
         for filename in files:
             file_path = os.path.join(folder_path, filename)
-            # תמיכה ב-PDF, TXT ואפילו PPTX
             if filename.lower().endswith((".pdf", ".txt", ".pptx")):
                 try:
                     f = genai.upload_file(file_path)
@@ -108,7 +109,7 @@ def get_or_create_cached_model():
             return model, uploaded_files_info, "לא נמצאו קבצים בתיקיית course_files."
     except Exception as e:
         model = genai.GenerativeModel(model_name=target_model_name, system_instruction=system_instruction)
-        return model, uploaded_files_info, f"שגיאה ביצירת קאש: {e}"
+        return model, uploaded_files_info, f"שגיאה ביצירת קאש (עובר למודל רגיל): {e}"
 
 model, file_status_log, cache_status_msg = get_or_create_cached_model()
 
