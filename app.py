@@ -26,7 +26,7 @@ if "GEMINI_API_KEY" not in st.secrets:
 
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
-# --- סרגל צדי: קבצים להעלאה ומצב מרצה ---
+# --- סרגל צדי: קבצים להעלאה ומצב מרצה מאובטח ---
 st.sidebar.markdown("---")
 st.sidebar.title("📁 קבצים להעלאה")
 exam_files = st.sidebar.file_uploader(
@@ -36,8 +36,19 @@ exam_files = st.sidebar.file_uploader(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.title("🛠️ הגדרות כניסת מרצה")
-lecturer_mode = st.sidebar.checkbox("הפעל מצב מרצה (ניהול ובקרה)")
+st.sidebar.title("🛠️ אזור מרצה")
+lecturer_mode_checkbox = st.sidebar.checkbox("הפעל מצב מרצה")
+
+lecturer_authenticated = False
+if lecturer_mode_checkbox:
+    entered_password = st.sidebar.text_input("הכנס סיסמת מרצה:", type="password")
+    # בדיקה מול הסיסמה שהוגדרה ב-Secrets של Streamlit
+    if "LECTURER_PASSWORD" in st.secrets and entered_password == st.secrets["LECTURER_PASSWORD"]:
+        lecturer_authenticated = True
+        st.sidebar.success("הזדהות הצליחה!")
+    else:
+        if entered_password:
+            st.sidebar.error("סיסמה שגויה.")
 
 # --- הנחיות המערכת ---
 system_instruction = """
@@ -57,10 +68,11 @@ system_instruction = """
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
 """
 
-# --- יצירת מודל מול gemini-3.8-flash עם זיכרון מטמון ---
+# --- פונקציית טעינה עם מעקב מפורט למרצה ---
 @st.cache_resource
 def get_or_create_cached_model():
     folder_path = "course_files"
+    uploaded_files_info = []
     uploaded_files_for_cache = []
     
     if os.path.exists(folder_path):
@@ -70,10 +82,10 @@ def get_or_create_cached_model():
                 try:
                     f = genai.upload_file(file_path)
                     uploaded_files_for_cache.append(f)
+                    uploaded_files_info.append(f"✅ הועלה בהצלחה: {filename} (מזהה: {f.name})")
                 except Exception as e:
-                    print(f"שגיאה בהעלאת {filename}: {e}")
+                    uploaded_files_info.append(f"❌ שגיאה בהעלאת {filename}: {e}")
 
-    # שימוש ישיר במודל שגוגל דורשת
     target_model_name = 'gemini-3.8-flash'
     
     try:
@@ -85,21 +97,28 @@ def get_or_create_cached_model():
                 contents=uploaded_files_for_cache,
             )
             model = genai.GenerativeModel.from_cached_content(cached_content=cache)
-            return model
+            return model, uploaded_files_info, "Context Cache נוצר בהצלחה בשרת!"
         else:
-            return genai.GenerativeModel(model_name=target_model_name, system_instruction=system_instruction)
+            model = genai.GenerativeModel(model_name=target_model_name, system_instruction=system_instruction)
+            return model, uploaded_files_info, "לא נמצאו קבצים בתיקיית course_files, המודל פועל ללא קאש."
     except Exception as e:
-        # פולבק למודל בסיסי במקרה של תקלה ביצירת קאש
-        return genai.GenerativeModel(model_name=target_model_name, system_instruction=system_instruction)
+        model = genai.GenerativeModel(model_name=target_model_name, system_instruction=system_instruction)
+        return model, uploaded_files_info, f"שגיאה ביצירת קאש (עבר למודל רגיל): {e}"
 
-model = get_or_create_cached_model()
+model, file_status_log, cache_status_msg = get_or_create_cached_model()
 
 if "chat" not in st.session_state:
     st.session_state.chat = model.start_chat(history=[])
 
-if lecturer_mode:
-    st.subheader("📊 לוח בקרה למרצה")
-    st.success("מצב מרצה פעיל: המערכת פועלת מול שרתי גוגל עם מודל 3.8 Flash.")
+# --- תצוגת לוח הבקרה למרצה (רק אם הזין סיסמה נכונה!) ---
+if lecturer_authenticated:
+    st.markdown("---")
+    st.subheader("📊 לוח בקרה וניהול למרצה")
+    st.info(cache_status_msg)
+    st.write("**סטטוס קבצי הקורס בתיקייה:**")
+    for log_item in file_status_log:
+        st.text(log_item)
+    st.markdown("---")
 
 # עיבוד קבצים שהסטודנט מעלה בצד
 exam_payload = []
