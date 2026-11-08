@@ -104,7 +104,7 @@ system_instruction = f"{base_system_instruction}\n\n{step_by_step_instruction}"
 if custom_lecturer_instruction:
     system_instruction += f"\n\nהנחיות נוספות מהמרצה (גלובליות):\n{custom_lecturer_instruction}"
 
-# --- הגדרת המודל ויצירת קאש חיה ללא קאש פנימי של Streamlit (לצורך דיבוג מוחלט) ---
+# --- הגדרת המודל ויצירת הקאש החיה ---
 target_model = 'gemini-3.8-flash'
 
 def get_or_create_course_cache():
@@ -116,7 +116,7 @@ def get_or_create_course_cache():
             existing_caches = client_temp.caches.list()
             for c in existing_caches:
                 return c.name, None
-        except Exception as list_err:
+        except Exception:
             pass
             
         # שלב ב': העלאת קבצים ויצירת קאש חדש
@@ -157,10 +157,8 @@ def get_or_create_course_cache():
         return cache_obj.name, None
         
     except Exception as e:
-        # מחזירים את המחרוזת המלאה של השגיאה החוצה
         return None, str(e)
 
-# מריצים ישירות בלי שמירת סטטוס תקוע בזיכרון של Streamlit
 course_cache_name, cache_creation_error = get_or_create_course_cache()
 
 if "messages" not in st.session_state:
@@ -178,41 +176,79 @@ if lecturer_authenticated:
         if cache_creation_error:
             st.error(f"🔍 שגיאת ה-API המדויקת בעת יצירת הקאש:\n\n`{cache_creation_error}`")
     
-    # --- כלי בדיקת טוקנים למרצה ---
+    with st.expander("🔍 הצג את הנחיות המערכת המלאות שמועברות כרגע למודל"):
+        st.code(system_instruction, language="text")
+        
     st.markdown("---")
-    st.subheader("🧮 בדיקת נפח טוקנים (Context Caching Check)")
-    if st.button("בדוק סך טוקנים של כל קבצי הקורס"):
+
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# עיבוד קבצים שהסטודנט מעלה בצד
+exam_payload = []
+if exam_files:
+    for index, uploaded_file in enumerate(exam_files):
         try:
-            with st.spinner("סופר טוקנים מול השרת של גוגל..."):
-                client_count = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                folder_path = os.path.join(current_dir, "course_files")
+            ext = os.path.splitext(uploaded_file.name)[1]
+            safe_student_name = f"student_exam_{index}{ext}"
+            temp_path = os.path.join(".", safe_student_name)
+            
+            with open(temp_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            
+            client_temp = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+            g_uploaded = client_temp.files.upload(file=temp_path)
+            exam_payload.append(g_uploaded)
+            
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception as e:
+            st.sidebar.error(f"שגיאה בהעלאת הקובץ {uploaded_file.name}: {e}")
+
+# תיבת הקלט של המשתמש
+if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
+        if exam_files:
+            file_names = ", ".join([f.name for f in exam_files])
+            st.caption(f"📄 קבצים מצורפים: {file_names}")
+
+    try:
+        with st.chat_message("assistant"):
+            with st.spinner("מנתח את השאלה..."):
+                client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
                 
-                if os.path.exists(folder_path):
-                    total_tokens = 0
-                    files_list = os.listdir(folder_path)
+                contents = []
+                if exam_payload:
+                    contents.extend(exam_payload)
                     
-                    for index, filename in enumerate(files_list):
-                        if filename.lower().endswith((".pdf", ".txt", ".pptx", ".png", ".jpg", ".jpeg")):
-                            file_path = os.path.join(folder_path, filename)
-                            ext = os.path.splitext(filename)[1]
-                            safe_temp_path = os.path.join(current_dir, f"token_file_{index}{ext}")
-                            shutil.copy(file_path, safe_temp_path)
-                            
-                            temp_g_file = client_count.files.upload(file=safe_temp_path)
-                            
-                            token_resp = client_count.models.count_tokens(
-                                model=target_model,
-                                contents=[temp_g_file]
-                            )
-                            total_tokens += token_resp.total_tokens
-                            
-                            try:
-                                client_count.files.delete(name=temp_g_file.name)
-                            except Exception:
-                                pass
-                                
-                            if os.path.exists(safe_temp_path):
-                                os.remove(safe_temp_path)
+                for m in st.session_state.messages[:-1]:
+                    role_str = "סטודנט" if m["role"] == "user" else "מורה"
+                    contents.append(f"{role_str}: {m['content']}")
                     
-                    st.metric(label="סך כל הט
+                contents.append(user_input)
+
+                config_params = {
+                    "temperature": 0.5,
+                    "max_output_tokens": 8192
+                }
+                
+                if course_cache_name:
+                    config_params["cached_content"] = course_cache_name
+                else:
+                    config_params["system_instruction"] = system_instruction
+
+                response = client.models.generate_content(
+                    model=target_model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(**config_params)
+                )
+                
+                bot_reply = response.text
+                st.markdown(bot_reply)
+                st.session_state.messages.append({"role": "assistant", "content": bot_reply})
+                
+    except Exception as e:
+        st.error(f"אירעה שגיאה בשליחת ההודעה לשרת: {e}")
