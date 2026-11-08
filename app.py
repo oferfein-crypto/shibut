@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import hashlib
 import os
+import shutil
 import tempfile
 import time
 
@@ -177,6 +178,43 @@ def wait_until_ready(client, file):
     raise RuntimeError(f"עיבוד הקובץ נמשך זמן רב: {file.display_name}")
 
 
+def upload_with_ascii_filename(client, *, suffix, mime_type, safe_display_name,
+                               source_path=None, file_bytes=None):
+    """Upload via an ASCII-only path and ASCII-only metadata.
+
+    Some HTTP upload stacks put the local filename or display_name in headers
+    that cannot encode Hebrew/other Unicode. The original filename is kept
+    separately for the model's source labels and for display in Streamlit.
+    """
+    if not safe_display_name.isascii() or not suffix.isascii():
+        raise ValueError("Temporary upload names must contain ASCII characters only")
+    if (source_path is None) == (file_bytes is None):
+        raise ValueError("Provide either source_path or file_bytes")
+
+    with tempfile.NamedTemporaryFile(
+        mode="wb", prefix="gemini_upload_", suffix=suffix, delete=False
+    ) as temporary:
+        temporary_path = temporary.name
+        if source_path is not None:
+            with open(source_path, "rb") as source:
+                shutil.copyfileobj(source, temporary)
+        else:
+            temporary.write(file_bytes)
+
+    try:
+        return client.files.upload(
+            file=temporary_path,
+            config=types.UploadFileConfig(
+                mime_type=mime_type, display_name=safe_display_name
+            ),
+        )
+    finally:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+
+
 @st.cache_data(ttl=23 * 3600, max_entries=5, show_spinner="מכין קבצים ל-Gemini...")
 def get_course_resources(manifest):
     """Upload only once per process/cache lifetime; return serializable resource metadata."""
@@ -188,9 +226,13 @@ def get_course_resources(manifest):
             resources.append({"name": name, "text": pptx_to_text(path)})
             continue
         mime = MIME_TYPES[path.suffix.lower()]
-        uploaded = client.files.upload(
-            file=str(path),
-            config=types.UploadFileConfig(mime_type=mime, display_name=name),
+        ascii_name = f"course_{hashlib.sha256(name.encode('utf-8')).hexdigest()[:16]}{path.suffix.lower()}"
+        uploaded = upload_with_ascii_filename(
+            client,
+            source_path=path,
+            suffix=path.suffix.lower(),
+            mime_type=mime,
+            safe_display_name=ascii_name,
         )
         uploaded = wait_until_ready(client, uploaded)
         resources.append({
@@ -270,22 +312,17 @@ def student_upload_parts(uploaded_files, client):
         data = st.session_state.student_file_cache.get(key)
         if not data or time.time() - data["uploaded_at"] > 23 * 3600:
             mime = MIME_TYPES[file.name.lower()[file.name.rfind("."):]]
-            # Unique temp file per upload avoids collisions among students.
+            # Filename and display_name must both be ASCII; keep the Hebrew
+            # original separately for the user-facing UI and model labels.
             suffix = Path(file.name).suffix.lower()
-            tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-            try:
-                with tmp:
-                    tmp.write(payload)
-                uploaded = client.files.upload(
-                    file=tmp.name,
-                    config=types.UploadFileConfig(mime_type=mime, display_name=file.name),
-                )
-                uploaded = wait_until_ready(client, uploaded)
-            finally:
-                try:
-                    os.unlink(tmp.name)
-                except FileNotFoundError:
-                    pass
+            uploaded = upload_with_ascii_filename(
+                client,
+                suffix=suffix,
+                file_bytes=payload,
+                mime_type=mime,
+                safe_display_name=f"student_{key[:16]}{suffix}",
+            )
+            uploaded = wait_until_ready(client, uploaded)
             data = {
                 "name": file.name,
                 "uri": uploaded.uri,
