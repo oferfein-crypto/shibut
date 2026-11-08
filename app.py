@@ -129,7 +129,9 @@ if custom_lecturer_instruction:
         "\n\nהנחיות נוספות מהמרצה (גלובליות):\n"
         + custom_lecturer_instruction
     )
-    def get_manifest():
+
+
+def get_manifest():
     if not COURSE_DIR.is_dir():
         raise RuntimeError("תיקיית course_files לא נמצאה לצד קובץ האפליקציה.")
     files = sorted(
@@ -217,8 +219,9 @@ def course_fingerprint(manifest, instruction):
     h.update(instruction.encode("utf-8"))
     h.update(MODEL.encode("utf-8"))
     return h.hexdigest()[:24]
-    
-    def cache_not_near_expiry(cache):
+
+
+def cache_not_near_expiry(cache):
     expires = cache.expire_time
     if not expires:
         return True
@@ -283,7 +286,7 @@ def student_upload_parts(uploaded_files, client):
                     os.unlink(tmp.name)
                 except FileNotFoundError:
                     pass
-    data = {
+            data = {
                 "name": file.name,
                 "uri": uploaded.uri,
                 "mime_type": uploaded.mime_type or mime,
