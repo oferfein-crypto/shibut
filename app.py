@@ -107,7 +107,7 @@ course_files_payload, file_status_log = upload_course_files_once()
 
 # יצירת מופע לקוח חדש ונקי לכל פעולה
 client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-target_model = 'gemini-3.8-flash'
+target_model = 'gemini-3.5-flash-light'
 
 # ניהול היסטוריית צ'אט ב-session_state של Streamlit
 if "messages" not in st.session_state:
@@ -117,7 +117,7 @@ if "messages" not in st.session_state:
 if lecturer_authenticated:
     st.markdown("---")
     st.subheader("📊 לוח בקרה וניהול למרצה")
-    st.success("הקבצים זמינים למורה הפרטי עם מודל 3.8 Flash!")
+    st.success("הקבצים זמינים למורה הפרטי עם מודל 3.5 Flash!")
     st.write("**סטטוס קבצי הקורס בתיקייה:**")
     for log_item in file_status_log:
         st.text(log_item)
