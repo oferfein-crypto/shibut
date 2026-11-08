@@ -48,7 +48,6 @@ if lecturer_mode_checkbox:
         lecturer_authenticated = True
         st.sidebar.success("הזדהות הצליחה!")
         
-        # שדה הוספת הנחיות מערכת דינמיות למרצה
         st.sidebar.markdown("---")
         custom_lecturer_instruction = st.sidebar.text_area(
             "⚙️ הנחיות מערכת נוספות (לעיני המרצה בלבד):",
@@ -60,11 +59,10 @@ if lecturer_mode_checkbox:
         if entered_password:
             st.sidebar.error("סיסמה שגויה.")
 
-# אם המרצה לא מחובר, שומרים את הערך האחרון שהוזן אם קיים בסטייט
 if not lecturer_authenticated and "custom_lecturer_instruction" in st.session_state:
     custom_lecturer_instruction = st.session_state["custom_lecturer_instruction"]
 
-# --- הנחיות המערכת המעודכנות ---
+# --- הנחיות המערכת ---
 base_system_instruction = """
 תפקיד ומטרה:
 אתה מורה פרטי אקדמי ועוזר הוראה לקורס אקדמי בשיטות מחקר לתלמידי תואר ראשון בפסיכולוגיה. תפקידך לסייע לסטודנטים להבין את החומר, להתכונן למבחנים ולתרגל מושגים.
@@ -84,22 +82,20 @@ base_system_instruction = """
 
 step_by_step_instruction = "אם אתה מקבל מהסטודנט שאלה, תמיד נתח את השאלה בצורה מעמיקה, הסבר שלב אחר שלב את תהליך החשיבה, והתייחס בקצרה מדוע החלופות האחרות שגויות."
 
-# בניית הנחיית המערכת הסופית כולל תוספות המרצה אם קיימות
 system_instruction = f"{base_system_instruction}\n\n{step_by_step_instruction}"
 if custom_lecturer_instruction:
     system_instruction += f"\n\nהנחיות נוספות מהמרצה:\n{custom_lecturer_instruction}"
 
 target_model = 'gemini-3.5-flash-lite'
 
-# --- העלאת קבצי הקורס פעם אחת ב-Session (עם עקיפת שמות בעברית) ---
+# --- יצירת Context Cache מרכזי ויציב בשרת (פעם אחת בלבד) ---
 @st.cache_resource
-def upload_course_files():
+def get_or_create_course_cache():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     folder_path = os.path.join(current_dir, "course_files")
     
     client_temp = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-    uploaded_files_info = []
-    gemini_files = []
+    uploaded_files = []
     
     if os.path.exists(folder_path):
         for index, filename in enumerate(os.listdir(folder_path)):
@@ -107,24 +103,31 @@ def upload_course_files():
             if filename.lower().endswith((".pdf", ".txt", ".pptx", ".png", ".jpg", ".jpeg")):
                 try:
                     ext = os.path.splitext(filename)[1]
-                    safe_temp_name = f"course_file_{index}{ext}"
-                    safe_temp_path = os.path.join(current_dir, safe_temp_name)
-                    
+                    safe_temp_path = os.path.join(current_dir, f"cache_file_{index}{ext}")
                     shutil.copyfile(file_path, safe_temp_path)
                     g_file = client_temp.files.upload(file=safe_temp_path)
-                    gemini_files.append(g_file)
-                    uploaded_files_info.append(f"✅ הועלה בהצלחה לשרת: {filename}")
-                    
+                    uploaded_files.append(g_file)
                     if os.path.exists(safe_temp_path):
                         os.remove(safe_temp_path)
                 except Exception as e:
-                    uploaded_files_info.append(f"❌ שגיאה בהעלאת {filename}: {e}")
-    else:
-        uploaded_files_info.append(f"⚠️ אזהרה: התיקייה course_files לא נמצאה.")
+                    print(f"Error caching {filename}: {e}")
+                    
+    if not uploaded_files:
+        return None
         
-    return gemini_files, uploaded_files_info
+    # יצירת ה-Cache בשרתים של גוגל למשך שעתיים (TTL)
+    cache_obj = client_temp.caches.create(
+        model=target_model,
+        config=types.CreateCachedContentConfig(
+            contents=uploaded_files,
+            system_instruction=system_instruction,
+            ttl="7200s"
+        )
+    )
+    return cache_obj.name
 
-course_files_payload, file_status_log = upload_course_files()
+# טעינת ה-Cache ברקע
+course_cache_name = get_or_create_course_cache()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -133,18 +136,14 @@ if "messages" not in st.session_state:
 if lecturer_authenticated:
     st.markdown("---")
     st.subheader("📊 לוח בקרה וניהול למרצה")
-    st.success("המערכת מחוברת עם מודל gemini-3.5-flash-lite, רמת חשיבה 0.5 והנחיות דינמיות פעילות!")
-    st.write("**סטטוס קבצי הקורס בתיקייה:**")
-    for log_item in file_status_log:
-        st.text(log_item)
+    st.success("המערכת מחוברת עם מודל gemini-3.5-flash-lite ומופעל בה מנגנון Context Caching לזמני תגובה מהירים!")
     st.markdown("---")
 
-# הצגת היסטוריית השיחה מתוך הזיכרון
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# עיבוד קבצים שהסטודנט מעלה בצד (עם עקיפת שמות בעברית)
+# עיבוד קבצים שהסטודנט מעלה בצד
 exam_payload = []
 if exam_files:
     for index, uploaded_file in enumerate(exam_files):
@@ -176,35 +175,38 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
 
     try:
         with st.chat_message("assistant"):
-            with st.spinner("מנתח את השאלה בצורה מעמיקה ובונה הסבר שלב-אחר-שלב..."):
-                # אתחול לקוח חדש ונקי לכל שאלה – מונע לחלוטין את שגיאת 'client has been closed'
+            with st.spinner("מנתח את השאלה במהירות מתוך הזיכרון המטמון..."):
                 client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
                 
                 contents = []
                 
-                # צרוף קבצי הקורס כהקשר רקע למודל
-                if course_files_payload:
-                    contents.extend(course_files_payload)
-                    
-                # צרוף קבצי המבחן/תרגיל שהסטודנט העלה כעת
+                # אם הועלו קבצים ספציפיים על ידי הסטודנט, נצרף אותם לבקשה הנוכחית
                 if exam_payload:
                     contents.extend(exam_payload)
                     
-                # צרוף היסטוריית השיחה הקודמת לצורך רציפות
+                # צרוף ההיסטוריה והשאלה הנוכחית
                 for m in st.session_state.messages[:-1]:
                     role_str = "סטודנט" if m["role"] == "user" else "מורה"
                     contents.append(f"{role_str}: {m['content']}")
                     
-                # צרוף השאלה הנוכחית
                 contents.append(user_input)
+
+                # הגדרת הקריאה המשתמשת ב-Context Cache המהיר
+                config_params = {
+                    "temperature": 0.5,
+                    "max_output_tokens": 8192
+                }
+                
+                if course_cache_name:
+                    config_params["cached_content"] = course_cache_name
+                else:
+                    # גיבוי למקרה שהקאש לא נטען
+                    config_params["system_instruction"] = system_instruction
 
                 response = client.models.generate_content(
                     model=target_model,
                     contents=contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        temperature=0.5
-                    )
+                    config=types.GenerateContentConfig(**config_params)
                 )
                 
                 bot_reply = response.text
