@@ -103,7 +103,7 @@ system_instruction = f"{base_system_instruction}\n\n{step_by_step_instruction}"
 if custom_lecturer_instruction:
     system_instruction += f"\n\nהנחיות נוספות מהמרצה (גלובליות):\n{custom_lecturer_instruction}"
 
-# --- הגדרת המודל והקאש החכם (מונע תקיעות טעינה) ---
+# --- הגדרת המודל והקאש החכם (כולל שמירת שגיאות דיבוג) ---
 target_model = 'gemini-3.8-flash'
 
 @st.cache_resource
@@ -111,15 +111,16 @@ def get_or_create_course_cache():
     try:
         client_temp = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
         
-        # 1. בדיקה האם כבר קיים קאש פעיל בשרתים של גוגל כדי לחסוך זמן טעינה ארוך
+        # 1. בדיקה האם כבר קיים קאש פעיל בשרתים של גוגל
         try:
             existing_caches = client_temp.caches.list()
             for c in existing_caches:
                 return c.name
-        except Exception:
+        except Exception as list_err:
+            # נשמור גם שגיאה זו לצורך מעקב אם צריך
             pass
             
-        # 2. אם אין קאש קיים, ניצור אותו פעם אחת בלבד מהתיקייה
+        # 2. אם אין קאש קיים, ניצור אותו פעם אחת מהתיקייה
         current_dir = os.path.dirname(os.path.abspath(__file__))
         folder_path = os.path.join(current_dir, "course_files")
         uploaded_files = []
@@ -132,6 +133,7 @@ def get_or_create_course_cache():
                     uploaded_files.append(g_file)
                     
         if not uploaded_files:
+            st.session_state["cache_error_debug"] = "תיקיית course_files ריקה או שלא נמצאו בה קבצים נתמכים."
             return None
             
         cache_obj = client_temp.caches.create(
@@ -143,8 +145,10 @@ def get_or_create_course_cache():
             )
         )
         return cache_obj.name
+        
     except Exception as e:
-        print(f"Caching error: {e}")
+        # שמירת השגיאה המדויקת להצגה באזור המרצה
+        st.session_state["cache_error_debug"] = str(e)
         return None
 
 course_cache_name = get_or_create_course_cache()
@@ -154,86 +158,3 @@ if "messages" not in st.session_state:
 
 # --- לוח בקרה למרצה ---
 if lecturer_authenticated:
-    st.markdown("---")
-    st.subheader("📊 לוח בקרה וניהול למרצה")
-    if course_cache_name:
-        st.success("המערכת מחוברת עם מודל gemini-3.8-flash ו-Context Caching פעיל!")
-    else:
-        st.warning("המערכת פועלת עם מודל gemini-3.8-flash (עובדת במצב גיבוי יציב).")
-    
-    with st.expander("🔍 הצג את הנחיות המערכת המלאות שמועברות כרגע למודל"):
-        st.code(system_instruction, language="text")
-        
-    st.markdown("---")
-
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# עיבוד קבצים שהסטודנט מעלה בצד
-exam_payload = []
-if exam_files:
-    for index, uploaded_file in enumerate(exam_files):
-        try:
-            ext = os.path.splitext(uploaded_file.name)[1]
-            safe_student_name = f"student_exam_{index}{ext}"
-            temp_path = os.path.join(".", safe_student_name)
-            
-            with open(temp_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
-            client_temp = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-            g_uploaded = client_temp.files.upload(file=temp_path)
-            exam_payload.append(g_uploaded)
-            
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except Exception as e:
-            st.sidebar.error(f"שגיאה בהעלאת הקובץ {uploaded_file.name}: {e}")
-
-# תיבת הקלט של המשתמש
-if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.markdown(user_input)
-        if exam_files:
-            file_names = ", ".join([f.name for f in exam_files])
-            st.caption(f"📄 קבצים מצורפים: {file_names}")
-
-    try:
-        with st.chat_message("assistant"):
-            with st.spinner("מנתח את השאלה..."):
-                client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-                
-                contents = []
-                if exam_payload:
-                    contents.extend(exam_payload)
-                    
-                for m in st.session_state.messages[:-1]:
-                    role_str = "סטודנט" if m["role"] == "user" else "מורה"
-                    contents.append(f"{role_str}: {m['content']}")
-                    
-                contents.append(user_input)
-
-                config_params = {
-                    "temperature": 0.5,
-                    "max_output_tokens": 8192
-                }
-                
-                if course_cache_name:
-                    config_params["cached_content"] = course_cache_name
-                else:
-                    config_params["system_instruction"] = system_instruction
-
-                response = client.models.generate_content(
-                    model=target_model,
-                    contents=contents,
-                    config=types.GenerateContentConfig(**config_params)
-                )
-                
-                bot_reply = response.text
-                st.markdown(bot_reply)
-                st.session_state.messages.append({"role": "assistant", "content": bot_reply})
-                
-    except Exception as e:
-        st.error(f"אירעה שגיאה בשליחת ההודעה לשרת: {e}")
