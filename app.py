@@ -128,34 +128,38 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# עיבוד קבצים שהסטודנט מעלה בצד (עם עקיפת שמות בעברית)
-exam_payload = []
+# עיבוד קבצים שהסטודנט מעלה בצד (חילוץ טקסט ישיר למניעת שגיאות)
+student_files_text = ""
 if exam_files:
-    for index, uploaded_file in enumerate(exam_files):
+    for uploaded_file in exam_files:
+        file_ext = uploaded_file.name.split('.')[-1].lower()
         try:
-            ext = os.path.splitext(uploaded_file.name)[1]
-            safe_student_name = f"student_upload_{index}{ext}"
-            temp_path = os.path.join(".", safe_student_name)
-            
-            with open(temp_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
-            g_uploaded = client.files.upload(file=temp_path)
-            exam_payload.append(g_uploaded)
-            
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            if file_ext == "pdf":
+                reader = pypdf.PdfReader(uploaded_file)
+                pdf_text = ""
+                for page in reader.pages:
+                    t = page.extract_text()
+                    if t:
+                        pdf_text += t + "\n"
+                student_files_text += f"\n[תוכן קובץ מבחן/תרגיל שהועלה - {uploaded_file.name}]:\n{pdf_text}\n"
+            elif file_ext == "txt":
+                text_content = uploaded_file.getvalue().decode('utf-8')
+                student_files_text += f"\n[תוכן טקסט שהועלה - {uploaded_file.name}]:\n{text_content}\n"
         except Exception as e:
-            st.sidebar.error(f"שגיאה בהעלאת הקובץ {uploaded_file.name}: {e}")
+            st.sidebar.error(f"שגיאה בקריאת הקובץ {uploaded_file.name}: {e}")
 
 # תיבת הקלט של המשתמש
 if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
-    st.session_state.messages.append({"role": "user", "content": user_input})
+    full_user_input = user_input
+    if student_files_text:
+        full_user_input += f"\n\nלהלן תוכן הקבצים שהעלה הסטודנט:\n{student_files_text}"
+
+    st.session_state.messages.append({"role": "user", "content": full_user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
         if exam_files:
             file_names = ", ".join([f.name for f in exam_files])
-            st.caption(f"📄 קבצים מצורפים: {file_names}")
+            st.caption(f"📄 קבצים מצורפים ונקראים: {file_names}")
 
     try:
         with st.chat_message("assistant"):
@@ -170,12 +174,7 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
                 for m in st.session_state.messages[:-1]:
                     history_turns.append(types.Content(role="user" if m["role"] == "user" else "model", parts=[types.Part.from_text(text=m["content"])]))
                 
-                current_parts = [types.Part.from_text(text=user_input)]
-                if exam_payload:
-                    for ep in exam_payload:
-                        current_parts.append(ep)
-                
-                history_turns.append(types.Content(role="user", parts=current_parts))
+                history_turns.append(types.Content(role="user", parts=[types.Part.from_text(text=full_user_input)]))
                 
                 if course_files_payload and len(st.session_state.messages) == 1:
                     contents.extend(history_turns)
