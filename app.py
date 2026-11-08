@@ -1,8 +1,8 @@
 import streamlit as st
 from google import genai
 from google.genai import types
+import pypdf
 import os
-import shutil
 
 st.set_page_config(page_title="שיבוט מחקר - המורה הפרטי שלך", page_icon="🎓")
 
@@ -67,48 +67,50 @@ system_instruction = """
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
 """
 
-# --- אתחול הלקוח והעלאת קבצי הקורס פעם אחת ב-Session ---
+# --- טעינת קבצי הקורס מתיקיית course_files פעם אחת ב-Session ---
 @st.cache_resource
-def upload_course_files_once():
+def load_course_files_text():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     folder_path = os.path.join(current_dir, "course_files")
     
-    client_temp = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-    uploaded_files_info = []
-    gemini_files = []
+    combined_text = ""
+    file_status_info = []
     
     if os.path.exists(folder_path):
         files = os.listdir(folder_path)
-        for index, filename in enumerate(files):
+        for filename in files:
             file_path = os.path.join(folder_path, filename)
-            if filename.lower().endswith((".pdf", ".txt", ".pptx", ".png", ".jpg", ".jpeg")):
+            if filename.lower().endswith(".pdf"):
                 try:
-                    ext = os.path.splitext(filename)[1]
-                    safe_temp_name = f"course_file_{index}{ext}"
-                    safe_temp_path = os.path.join(current_dir, safe_temp_name)
-                    
-                    shutil.copyfile(file_path, safe_temp_path)
-                    g_file = client_temp.files.upload(file=safe_temp_path)
-                    gemini_files.append(g_file)
-                    uploaded_files_info.append(f"✅ הועלה בהצלחה לשרת: {filename}")
-                    
-                    if os.path.exists(safe_temp_path):
-                        os.remove(safe_temp_path)
+                    reader = pypdf.PdfReader(file_path)
+                    file_text = ""
+                    for page in reader.pages:
+                        t = page.extract_text()
+                        if t:
+                            file_text += t + "\n"
+                    # תיקון כיווניות טקסט במידת הצורך והוספה למאגר
+                    combined_text += f"\n\n--- [מתוך חומרי הקורס: {filename}] ---\n{file_text}"
+                    file_status_info.append(f"✅ נטען בהצלחה: {filename}")
                 except Exception as e:
-                    uploaded_files_info.append(f"❌ שגיאה בהעלאת {filename}: {e}")
+                    file_status_info.append(f"❌ שגיאה בקריאת {filename}: {e}")
+            elif filename.lower().endswith(".txt"):
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        combined_text += f"\n\n--- [מתוך חומרי הקורס: {filename}] ---\n{f.read()}"
+                        file_status_info.append(f"✅ נטען בהצלחה: {filename}")
+                except Exception as e:
+                    file_status_info.append(f"❌ שגיאה בקריאת {filename}: {e}")
     else:
-        uploaded_files_info.append(f"⚠️ אזהרה: התיקייה course_files לא נמצאה.")
+        file_status_info.append(f"⚠️ אזהרה: התיקייה course_files לא נמצאה.")
         
-    return gemini_files, uploaded_files_info
+    return combined_text, file_status_info
 
-# טעינת קבצי הקורס פעם אחת
-course_files_payload, file_status_log = upload_course_files_once()
+course_context_text, file_status_log = load_course_files_text()
 
-# יצירת מופע לקוח חדש ונקי לכל פעולה
+# אתחול הלקוח והודעות
 client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 target_model = 'gemini-3.5-flash-lite'
 
-# ניהול היסטוריית צ'אט ב-session_state של Streamlit
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -116,82 +118,71 @@ if "messages" not in st.session_state:
 if lecturer_authenticated:
     st.markdown("---")
     st.subheader("📊 לוח בקרה וניהול למרצה")
-    st.success("הקבצים זמינים למורה הפרטי עם מודל 3.5-flash-lite!")
+    st.success("חומרי הקורס נטענו בהצלחה ופועלים עם מודל 3.5-flash-lite!")
     st.write("**סטטוס קבצי הקורס בתיקייה:**")
     for log_item in file_status_log:
         st.text(log_item)
     st.markdown("---")
 
-# הצגת היסטוריית ההודעות מתוך הזיכרון של Streamlit
+# הצגת היסטוריית ההודעות
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# עיבוד קבצים שהסטודנט מעלה בצד (העלאה ישירה של הקובץ לשרת של גוגל כך שהמודל יקרא אותו מושלם)
-exam_payload = []
+# עיבוד קבצים שהסטודנט מעלה בצד
+student_exam_text = ""
 if exam_files:
-    for index, uploaded_file in enumerate(exam_files):
+    for uploaded_file in exam_files:
+        file_ext = uploaded_file.name.split('.')[-1].lower()
         try:
-            ext = os.path.splitext(uploaded_file.name)[1]
-            safe_student_name = f"student_upload_{index}{ext}"
-            temp_path = os.path.join(".", safe_student_name)
-            
-            with open(temp_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
-            g_uploaded = client.files.upload(file=temp_path)
-            exam_payload.append(g_uploaded)
-            
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            if file_ext == "pdf":
+                reader = pypdf.PdfReader(uploaded_file)
+                pdf_text = ""
+                for page in reader.pages:
+                    t = page.extract_text()
+                    if t:
+                        pdf_text += t + "\n"
+                student_exam_text += f"\n\n--- [קובץ מבחן שהעלה הסטודנט: {uploaded_file.name}] ---\n{pdf_text}"
+            elif file_ext == "txt":
+                text_content = uploaded_file.getvalue().decode('utf-8')
+                student_exam_text += f"\n\n--- [טקסט שהעלה הסטודנט: {uploaded_file.name}] ---\n{text_content}"
         except Exception as e:
-            st.sidebar.error(f"שגיאה בהעלאת הקובץ {uploaded_file.name}: {e}")
+            st.sidebar.error(f"שגיאה בקריאת הקובץ {uploaded_file.name}: {e}")
 
 # תיבת הקלט של המשתמש
 if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
-    # שמירת תצוגה נקייה למשתמש בהיסטוריה
-    display_content = user_input
-    if exam_files:
-        file_names = ", ".join([f.name for f in exam_files])
-        display_content += f"\n\n*(קבצים מצורפים: {file_names})*"
+    full_prompt = user_input
+    if student_exam_text:
+        full_prompt += f"\n{student_exam_text}"
 
-    st.session_state.messages.append({"role": "user", "content": display_content})
+    st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
         if exam_files:
             file_names = ", ".join([f.name for f in exam_files])
-            st.caption(f"📄 קבצים מצורפים: {file_names}")
+            st.caption(f"📄 קבצים מצורפים למבחן: {file_names}")
 
     try:
         with st.chat_message("assistant"):
-            with st.spinner("חושב ומנתח ישירות מתוך קובצי המבחן וחומרי הקורס..."):
+            with st.spinner("חושב ומנתח מתוך חומרי הקורס והמבחן..."):
+                # בניית ההיסטוריה המלאה עבור ה-SDK החדש
                 contents = []
                 
-                # בפעם הראשונה, נצרף את קבצי הקורס כהקשר רקע למודל
-                if len(st.session_state.messages) == 1 and course_files_payload:
-                    contents.extend(course_files_payload)
-                
-                history_turns = []
+                # בפעם הראשונה נצרף את חומרי הקורס כהקשר רקע למערכת
+                if len(st.session_state.messages) == 1 and course_context_text:
+                    contents.append(types.Content(role="user", parts=[types.Part.from_text(text=f"להלן חומרי הקורס הרשמיים שעליך להתבסס עליהם:\n{course_context_text}")]))
+                    contents.append(types.Content(role="model", parts=[types.Part.from_text(text="הבנתי היטב. קלטתי את כל חומרי הקורס ואפעל אך ורק לפיהם.")]))
+
+                # הוספת היסטוריית השיחה הקודמת
                 for m in st.session_state.messages[:-1]:
-                    history_turns.append(types.Content(role="user" if m["role"] == "user" else "model", parts=[types.Part.from_text(text=m["content"])]))
+                    contents.append(types.Content(role="user" if m["role"] == "user" else "model", parts=[types.Part.from_text(text=m["content"])]))
                 
-                # בניית חלקי ההודעה הנוכחית כולל קובצי הסטודנט שיועלו כ-Files לשרת של גוגל
-                current_parts = [types.Part.from_text(text=user_input)]
-                if exam_payload:
-                    for ep in exam_payload:
-                        current_parts.append(ep)
-                
-                history_turns.append(types.Content(role="user", parts=current_parts))
-                
-                if course_files_payload and len(st.session_state.messages) == 1:
-                    contents.extend(history_turns)
-                    final_contents = contents
-                else:
-                    final_contents = history_turns
+                # הוספת ההודעה הנוכחית עם תוכן הקבצים
+                contents.append(types.Content(role="user", parts=[types.Part.from_text(text=full_prompt)]))
 
                 response = client.models.generate_content(
                     model=target_model,
-                    contents=final_contents,
+                    contents=contents,
                     config=types.GenerateContentConfig(
                         system_instruction=system_instruction,
                         temperature=0.3
