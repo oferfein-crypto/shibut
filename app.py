@@ -40,14 +40,29 @@ st.sidebar.title("🛠️ אזור מרצה")
 lecturer_mode_checkbox = st.sidebar.checkbox("הפעל מצב מרצה")
 
 lecturer_authenticated = False
+custom_lecturer_instruction = ""
+
 if lecturer_mode_checkbox:
     entered_password = st.sidebar.text_input("הכנס סיסמת מרצה:", type="password")
     if "LECTURER_PASSWORD" in st.secrets and entered_password == st.secrets["LECTURER_PASSWORD"]:
         lecturer_authenticated = True
         st.sidebar.success("הזדהות הצליחה!")
+        
+        # שדה הוספת הנחיות מערכת דינמיות למרצה
+        st.sidebar.markdown("---")
+        custom_lecturer_instruction = st.sidebar.text_area(
+            "⚙️ הנחיות מערכת נוספות (לעיני המרצה בלבד):",
+            value=st.session_state.get("custom_lecturer_instruction", ""),
+            placeholder="הכנס כאן הנחיות נוספות שהמודל יתחשב בהן..."
+        )
+        st.session_state["custom_lecturer_instruction"] = custom_lecturer_instruction
     else:
         if entered_password:
             st.sidebar.error("סיסמה שגויה.")
+
+# אם המרצה לא מחובר, שומרים את הערך האחרון שהוזן אם קיים בסטייט
+if not lecturer_authenticated and "custom_lecturer_instruction" in st.session_state:
+    custom_lecturer_instruction = st.session_state["custom_lecturer_instruction"]
 
 # --- הנחיות המערכת המעודכנות ---
 base_system_instruction = """
@@ -60,15 +75,19 @@ base_system_instruction = """
 
 חוקים והנחיות לגבי חומרי הקורס:
 1. המצגות הן החומר העיקרי והמעודכן ביותר.
-2. יש גם קובץ בשם "שיטות מחקר - מאוחד" שהוא מפורט יותר מהמצגת, אך אם יש סתירה בינו לבין המצגת, העדף את המצגת.
+2. יש גם קובץ בשם "שיטות מחקר - מאוחד" שהוא מפורט יותר מהמצגת, אך אם יש סתירה בינו לבין המצגת, העדף את המצגת. (הנחיה קריטית: לעולם אל תציין בפני הסטודנט שקיים קובץ "שיטות מחקר - מאוחד" או קובץ מאוחד אחר, ואל תספק לו אותו או חלקים ממנו – השתמש בו אך ורק כבסיס ידע פנימי שלך בלבד).
 3. אם יש סתירה בין חומר אחר שאתה מכיר והמצגת, העדף את המצגת.
 4. בין הקבצים שהועלו יש גם תרגילים ופתרונות להם, למד גם אותם, ומבחנים.
 5. לכל מבחן שתי גרסאות: גרסא מעורבלת וגרסא (נקראת טופס 0) שבה תמיד התשובה הנכונה היא הראשונה (א), אלא אם כן כתוב אחרת בדפי ההסבר על המבחנים.
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
 """
 
-# הוספת הנחיית החשיבה המעמיקה שלב-אחר-שלב
-system_instruction = base_system_instruction + "\n\nאם אתה מקבל מהסטודנט שאלה, תמיד נתח את השאלה בצורה מעמיקה, הסבר שלב אחר שלב את תהליך החשיבה, והתייחס בקצרה מדוע החלופות האחרות שגויות."
+step_by_step_instruction = "אם אתה מקבל מהסטודנט שאלה, תמיד נתח את השאלה בצורה מעמיקה, הסבר שלב אחר שלב את תהליך החשיבה, והתייחס בקצרה מדוע החלופות האחרות שגויות."
+
+# בניית הנחיית המערכת הסופית כולל תוספות המרצה אם קיימות
+system_instruction = f"{base_system_instruction}\n\n{step_by_step_instruction}"
+if custom_lecturer_instruction:
+    system_instruction += f"\n\nהנחיות נוספות מהמרצה:\n{custom_lecturer_instruction}"
 
 target_model = 'gemini-3.5-flash-lite'
 
@@ -114,7 +133,7 @@ if "messages" not in st.session_state:
 if lecturer_authenticated:
     st.markdown("---")
     st.subheader("📊 לוח בקרה וניהול למרצה")
-    st.success("המערכת מחוברת עם מודל gemini-3.5-flash-lite, רמת חשיבה 0.5 וניהול חיבור יציב!")
+    st.success("המערכת מחוברת עם מודל gemini-3.5-flash-lite, רמת חשיבה 0.5 והנחיות דינמיות פעילות!")
     st.write("**סטטוס קבצי הקורס בתיקייה:**")
     for log_item in file_status_log:
         st.text(log_item)
