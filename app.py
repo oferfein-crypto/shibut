@@ -5,6 +5,7 @@ Put source materials in ./course_files.
 """
 
 from datetime import datetime, timedelta, timezone
+import base64
 from pathlib import Path
 import hashlib
 import os
@@ -12,6 +13,7 @@ import shutil
 import tempfile
 import time
 
+import requests
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -22,6 +24,7 @@ CACHE_TTL = "7200s"  # Two hours on Google's servers
 APP_DIR = Path(__file__).resolve().parent
 COURSE_DIR = APP_DIR / "course_files"
 INSTRUCTIONS_FILE = APP_DIR / "lecturer_instructions.txt"
+GITHUB_INSTRUCTIONS_PATH = "lecturer_instructions.txt"
 SUPPORTED_EXTS = {".pdf", ".txt", ".png", ".jpg", ".jpeg", ".pptx"}
 MIME_TYPES = {
     ".pdf": "application/pdf",
@@ -56,15 +59,110 @@ def make_client():
     )
 
 
-def load_lecturer_instructions():
+def github_settings():
+    """Separate PRIVATE repository avoids redeploying the student app on every edit."""
+    repo = st.secrets.get("GITHUB_DATA_REPO", "").strip()
+    token = st.secrets.get("GITHUB_DATA_TOKEN", "").strip()
+    branch = st.secrets.get("GITHUB_DATA_BRANCH", "main").strip()
+    if not repo or not token:
+        return None
+    if len(repo.split("/")) != 2 or not all(repo.split("/")):
+        raise RuntimeError("GITHUB_DATA_REPO חייב להיות בפורמט owner/repository")
+    return repo, token, branch
+
+
+def github_headers(token):
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def fetch_github_instructions(settings):
+    """Return (file text, GitHub blob SHA), or (None, None) when file does not exist."""
+    repo, token, branch = settings
+    url = f"https://api.github.com/repos/{repo}/contents/{GITHUB_INSTRUCTIONS_PATH}"
+    response = requests.get(
+        url, headers=github_headers(token), params={"ref": branch}, timeout=15
+    )
+    if response.status_code == 404:
+        # GitHub returns 404 for an inaccessible repository too: don't silently
+        # treat missing/incorrect credentials as a new instructions file.
+        check = requests.get(
+            f"https://api.github.com/repos/{repo}",
+            headers=github_headers(token), timeout=15,
+        )
+        check.raise_for_status()
+        if check.json().get("default_branch") != branch:
+            branch_check = requests.get(
+                f"https://api.github.com/repos/{repo}/branches/{branch}",
+                headers=github_headers(token), timeout=15,
+            )
+            branch_check.raise_for_status()
+        return None, None
+    response.raise_for_status()
+    data = response.json()
+    if data.get("type") != "file" or data.get("encoding") != "base64":
+        raise RuntimeError("תשובת GitHub לא מכילה קובץ טקסט תקין")
+    decoded = base64.b64decode(data["content"]).decode("utf-8")
+    return decoded, data["sha"]
+
+
+def legacy_instructions():
+    # Used only during migration, before the new GitHub data file is created.
     if INSTRUCTIONS_FILE.exists():
         return INSTRUCTIONS_FILE.read_text(encoding="utf-8")
     return st.secrets.get("LECTURER_INSTRUCTIONS", "")
 
 
-def save_lecturer_instructions(text):
-    # WARNING: local filesystem on Streamlit Community Cloud is not durable storage.
-    INSTRUCTIONS_FILE.write_text(text, encoding="utf-8")
+@st.cache_data(ttl=60, show_spinner=False)
+def load_lecturer_instructions_record():
+    settings = github_settings()
+    if settings is None:
+        return legacy_instructions(), None
+    text, sha = fetch_github_instructions(settings)
+    if text is None:
+        return legacy_instructions(), None
+    return text, sha
+
+
+def save_lecturer_instructions(text, expected_sha):
+    settings = github_settings()
+    if settings is None:
+        raise RuntimeError(
+            "שמירה קבועה אינה מוגדרת. יש להוסיף GITHUB_DATA_REPO "
+            "ו-GITHUB_DATA_TOKEN ל-Secrets של Streamlit."
+        )
+    repo, token, branch = settings
+    current_text, current_sha = fetch_github_instructions(settings)
+    if current_sha != expected_sha:
+        raise RuntimeError(
+            "ההנחיות שונו ב-GitHub מאז שטענת את העמוד. "
+            "רענן את העמוד, בדוק את השינויים ונסה שוב."
+        )
+    if current_text == text:
+        return
+    payload = {
+        "message": "Update lecturer instructions from Streamlit",
+        "content": base64.b64encode(text.encode("utf-8")).decode("ascii"),
+        "branch": branch,
+    }
+    if current_sha is not None:
+        payload["sha"] = current_sha
+    response = requests.put(
+        f"https://api.github.com/repos/{repo}/contents/{GITHUB_INSTRUCTIONS_PATH}",
+        headers=github_headers(token), json=payload, timeout=20,
+    )
+    if response.status_code in (409, 422):
+        raise RuntimeError(
+            "GitHub דחה את השמירה. ייתכן שהקובץ השתנה במקביל; "
+            "רענן את הדף ונסה שוב."
+        )
+    response.raise_for_status()
+    # Share changes across all Streamlit sessions, then create a fresh Gemini
+    # cache fingerprint automatically from the updated system instruction.
+    load_lecturer_instructions_record.clear()
 
 
 st.sidebar.markdown("---")
@@ -78,7 +176,15 @@ exam_files = st.sidebar.file_uploader(
 st.sidebar.markdown("---")
 st.sidebar.title("🛠️ אזור מרצה")
 lecturer_authenticated = False
-custom_lecturer_instruction = load_lecturer_instructions()
+try:
+    custom_lecturer_instruction, lecturer_instructions_sha = load_lecturer_instructions_record()
+except Exception as exc:
+    st.error(
+        "לא ניתן לטעון את הנחיות המרצה מ-GitHub. "
+        "האפליקציה נעצרה כדי שלא תענה בלי ההנחיות: "
+        f"{type(exc).__name__}: {exc}"
+    )
+    st.stop()
 
 if st.sidebar.checkbox("הפעל מצב מרצה"):
     entered_password = st.sidebar.text_input("הכנס סיסמת מרצה:", type="password")
@@ -94,13 +200,24 @@ if st.sidebar.checkbox("הפעל מצב מרצה"):
             height=150,
         )
         if st.sidebar.button("💾 שמור הנחיות"):
-            save_lecturer_instructions(new_instruction)
-            st.sidebar.success("ההנחיות עודכנו. שים לב: לשמירה קבועה בענן דרוש אחסון מתמשך.")
-            st.rerun()
-        st.sidebar.caption(
-            "ב-Streamlit Community Cloud קובץ מקומי עשוי להימחק בעת הפעלה מחדש או פריסה. "
-            "לשמירה קבועה דרוש מסד נתונים או שירות אחסון חיצוני."
-        )
+            try:
+                save_lecturer_instructions(new_instruction, lecturer_instructions_sha)
+            except Exception as exc:
+                st.sidebar.error(f"השמירה לא הצליחה: {type(exc).__name__}: {exc}")
+            else:
+                st.sidebar.success("ההנחיות נשמרו ב-GitHub ועודכנו לכל המשתמשים.")
+                st.rerun()
+        if github_settings() is None:
+            st.sidebar.warning(
+                "אחסון GitHub טרם הוגדר. ההנחיות עדיין נטענות מהמקור הישן, "
+                "ולא ניתן לשמור אותן לצמיתות עד להגדרת Secrets."
+            )
+        else:
+            st.sidebar.caption(
+                "ההנחיות נקראות ממאגר GitHub פרטי. "
+                "שינוי שנשמר יתעדכן עבור שאר המשתמשים ברענון הבא "
+                "(לכל היותר כ-60 שניות)."
+            )
     elif entered_password:
         st.sidebar.error("סיסמה שגויה")
 
