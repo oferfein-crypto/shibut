@@ -50,7 +50,7 @@ if lecturer_mode_checkbox:
             st.sidebar.error("סיסמה שגויה.")
 
 # --- הנחיות המערכת ---
-system_instruction = """
+base_system_instruction = """
 תפקיד ומטרה:
 אתה מורה פרטי אקדמי ועוזר הוראה לקורס אקדמי בשיטות מחקר לתלמידי תואר ראשון בפסיכולוגיה. תפקידך לסייע לסטודנטים להבין את החומר, להתכונן למבחנים ולתרגל מושגים.
 
@@ -67,15 +67,19 @@ system_instruction = """
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
 """
 
+# הוספת ההנחיה המפורשת בדיוק לפי בקשתך
+system_instruction = base_system_instruction + "\n\nאם אתה מקבל מהסטודנט שאלה, תמיד נתח את השאלה בצורה מעמיקה, הסבר שלב אחר שלב את תהליך החשיבה, והתייחס בקצרה מדוע החלופות האחרות שגויות."
+
 client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 target_model = 'gemini-3.5-flash-lite'
 
-# --- העלאת קבצי הקורס פעם אחת ושמירת ההפניות שלהם ---
+# --- העלאת קבצי הקורס פעם אחת ושמירת ההפניות שלהם (עם עקיפת שמות בעברית) ---
 @st.cache_resource
 def upload_course_files():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     folder_path = os.path.join(current_dir, "course_files")
     
+    client_temp = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
     uploaded_files_info = []
     gemini_files = []
     
@@ -85,10 +89,11 @@ def upload_course_files():
             if filename.lower().endswith((".pdf", ".txt", ".pptx", ".png", ".jpg", ".jpeg")):
                 try:
                     ext = os.path.splitext(filename)[1]
-                    safe_temp_path = os.path.join(current_dir, f"course_file_{index}{ext}")
-                    shutil.copyfile(file_path, safe_temp_path)
+                    safe_temp_name = f"course_file_{index}{ext}"
+                    safe_temp_path = os.path.join(current_dir, safe_temp_name)
                     
-                    g_file = client.files.upload(file=safe_temp_path)
+                    shutil.copyfile(file_path, safe_temp_path)
+                    g_file = client_temp.files.upload(file=safe_temp_path)
                     gemini_files.append(g_file)
                     uploaded_files_info.append(f"✅ הועלה בהצלחה לשרת: {filename}")
                     
@@ -96,17 +101,20 @@ def upload_course_files():
                         os.remove(safe_temp_path)
                 except Exception as e:
                     uploaded_files_info.append(f"❌ שגיאה בהעלאת {filename}: {e}")
+    else:
+        uploaded_files_info.append(f"⚠️ אזהרה: התיקייה course_files לא נמצאה.")
+        
     return gemini_files, uploaded_files_info
 
 course_files_payload, file_status_log = upload_course_files()
 
-# --- יצירת אובייקט הצ'אט הרשמי של ה-SDK (מנהל את ההיסטוריה והקונטקסט בצורה תקינה) ---
+# --- יצירת אובייקט הצ'אט הרשמי של ה-SDK (עם מודל 3.5-flash-lite וטמפרטורה 0.5) ---
 if "chat_session" not in st.session_state:
     st.session_state.chat_session = client.chats.create(
         model=target_model,
         config=types.GenerateContentConfig(
             system_instruction=system_instruction,
-            temperature=0.3
+            temperature=0.5
         )
     )
     # שליחת קבצי הקורס כהודעת פתיחה סמויה כדי שהמודל יכיר אותם לכל אורך השיחה
@@ -118,7 +126,7 @@ if "chat_session" not in st.session_state:
 if lecturer_authenticated:
     st.markdown("---")
     st.subheader("📊 לוח בקרה וניהול למרצה")
-    st.success("המערכת מחוברת עם מודל gemini-3.5-flash-lite וצ'אט מנוהל!")
+    st.success("המערכת מחוברת עם מודל gemini-3.5-flash-lite ורמת חשיבה מעמיקה (temperature=0.5)!")
     st.write("**סטטוס קבצי הקורס בתיקייה:**")
     for log_item in file_status_log:
         st.text(log_item)
@@ -129,19 +137,21 @@ for message in st.session_state.chat_session.get_history():
     role = "user" if message.role == "user" else "assistant"
     for part in message.parts:
         if hasattr(part, "text") and part.text:
-            # הסתרה של הודעת האתחול הראשונית של קבצי הקורס מהמסך של הסטודנט
+            # הסתרה של הודעת האתחול הראשונית של קבצי הקורס מהמסך
             if "להלן קבצי וחומרי הקורס הרשמיים" in part.text:
                 continue
             with st.chat_message(role):
                 st.markdown(part.text)
 
-# עיבוד קבצים שהסטודנט מעלה בצד (העלאה לשרת והכנה לשליחה ישירה)
+# עיבוד קבצים שהסטודנט מעלה בצד (עם עקיפת שמות בעברית)
 exam_payload = []
 if exam_files:
     for index, uploaded_file in enumerate(exam_files):
         try:
             ext = os.path.splitext(uploaded_file.name)[1]
-            temp_path = os.path.join(".", f"student_exam_{index}{ext}")
+            safe_student_name = f"student_exam_{index}{ext}"
+            temp_path = os.path.join(".", safe_student_name)
+            
             with open(temp_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             
@@ -163,8 +173,7 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
 
     try:
         with st.chat_message("assistant"):
-            with st.spinner("חושב ומנתח ישירות מתוך הקבצים..."):
-                # בניית הודעה שנשלחת ישירות ל-chat.send_message (תומך גם בטקסט וגם באובייקטי קבצים יחד!)
+            with st.spinner("מנתח את השאלה בצורה מעמיקה ובונה הסבר שלב-אחר-שלב..."):
                 message_payload = [user_input]
                 if exam_payload:
                     message_payload.extend(exam_payload)
