@@ -185,4 +185,94 @@ if lecturer_authenticated:
                             total_tokens += token_resp.total_tokens
                             
                             try:
-                                client_count
+                                client_count.files.delete(name=temp_g_file.name)
+                            except Exception:
+                                pass
+                    
+                    st.metric(label="סך כל הטוקנים בחומרי הקורס", value=f"{total_tokens:,}")
+                    
+                    if total_tokens < 32768:
+                        st.warning("⚠️ נפח הטוקנים נמוך מ-32,768. זהו ההסבר החד-משמעי לכך שגוגל דוחה את יצירת הקאש (דרישת מינימום קשיחה של ה-API).")
+                    else:
+                        st.success("✅ נפח הטוקנים עובר את סף המינימום של גוגל (32k+).")
+                else:
+                    st.error("תיקיית course_files לא נמצאה בנתיב.")
+        except Exception as token_err:
+            st.error(f"שגיאה בחישוב הטוקנים: {token_err}")
+
+    with st.expander("🔍 הצג את הנחיות המערכת המלאות שמועברות כרגע למודל"):
+        st.code(system_instruction, language="text")
+        
+    st.markdown("---")
+
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# עיבוד קבצים שהסטודנט מעלה בצד
+exam_payload = []
+if exam_files:
+    for index, uploaded_file in enumerate(exam_files):
+        try:
+            ext = os.path.splitext(uploaded_file.name)[1]
+            safe_student_name = f"student_exam_{index}{ext}"
+            temp_path = os.path.join(".", safe_student_name)
+            
+            with open(temp_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            
+            client_temp = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+            g_uploaded = client_temp.files.upload(file=temp_path)
+            exam_payload.append(g_uploaded)
+            
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception as e:
+            st.sidebar.error(f"שגיאה בהעלאת הקובץ {uploaded_file.name}: {e}")
+
+# תיבת הקלט של המשתמש
+if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
+        if exam_files:
+            file_names = ", ".join([f.name for f in exam_files])
+            st.caption(f"📄 קבצים מצורפים: {file_names}")
+
+    try:
+        with st.chat_message("assistant"):
+            with st.spinner("מנתח את השאלה..."):
+                client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+                
+                contents = []
+                if exam_payload:
+                    contents.extend(exam_payload)
+                    
+                for m in st.session_state.messages[:-1]:
+                    role_str = "סטודנט" if m["role"] == "user" else "מורה"
+                    contents.append(f"{role_str}: {m['content']}")
+                    
+                contents.append(user_input)
+
+                config_params = {
+                    "temperature": 0.5,
+                    "max_output_tokens": 8192
+                }
+                
+                if course_cache_name:
+                    config_params["cached_content"] = course_cache_name
+                else:
+                    config_params["system_instruction"] = system_instruction
+
+                response = client.models.generate_content(
+                    model=target_model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(**config_params)
+                )
+                
+                bot_reply = response.text
+                st.markdown(bot_reply)
+                st.session_state.messages.append({"role": "assistant", "content": bot_reply})
+                
+    except Exception as e:
+        st.error(f"אירעה שגיאה בשליחת ההודעה לשרת: {e}")
