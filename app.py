@@ -1,8 +1,8 @@
 import streamlit as st
 from google import genai
 from google.genai import types
-import pypdf
 import os
+import shutil
 
 st.set_page_config(page_title="שיבוט מחקר - המורה הפרטי שלך", page_icon="🎓")
 
@@ -67,131 +67,110 @@ system_instruction = """
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
 """
 
-# --- טעינת קבצי הקורס מתיקיית course_files פעם אחת ב-Session ---
-@st.cache_resource
-def load_course_files_text():
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    folder_path = os.path.join(current_dir, "course_files")
-    
-    combined_text = ""
-    file_status_info = []
-    
-    if os.path.exists(folder_path):
-        files = os.listdir(folder_path)
-        for filename in files:
-            file_path = os.path.join(folder_path, filename)
-            if filename.lower().endswith(".pdf"):
-                try:
-                    reader = pypdf.PdfReader(file_path)
-                    file_text = ""
-                    for page in reader.pages:
-                        t = page.extract_text()
-                        if t:
-                            file_text += t + "\n"
-                    # תיקון כיווניות טקסט במידת הצורך והוספה למאגר
-                    combined_text += f"\n\n--- [מתוך חומרי הקורס: {filename}] ---\n{file_text}"
-                    file_status_info.append(f"✅ נטען בהצלחה: {filename}")
-                except Exception as e:
-                    file_status_info.append(f"❌ שגיאה בקריאת {filename}: {e}")
-            elif filename.lower().endswith(".txt"):
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        combined_text += f"\n\n--- [מתוך חומרי הקורס: {filename}] ---\n{f.read()}"
-                        file_status_info.append(f"✅ נטען בהצלחה: {filename}")
-                except Exception as e:
-                    file_status_info.append(f"❌ שגיאה בקריאת {filename}: {e}")
-    else:
-        file_status_info.append(f"⚠️ אזהרה: התיקייה course_files לא נמצאה.")
-        
-    return combined_text, file_status_info
-
-course_context_text, file_status_log = load_course_files_text()
-
-# אתחול הלקוח והודעות
 client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 target_model = 'gemini-3.5-flash-lite'
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# --- העלאת קבצי הקורס פעם אחת ושמירת ההפניות שלהם ---
+@st.cache_resource
+def upload_course_files():
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    folder_path = os.path.join(current_dir, "course_files")
+    
+    uploaded_files_info = []
+    gemini_files = []
+    
+    if os.path.exists(folder_path):
+        for index, filename in enumerate(os.listdir(folder_path)):
+            file_path = os.path.join(folder_path, filename)
+            if filename.lower().endswith((".pdf", ".txt", ".pptx", ".png", ".jpg", ".jpeg")):
+                try:
+                    ext = os.path.splitext(filename)[1]
+                    safe_temp_path = os.path.join(current_dir, f"course_file_{index}{ext}")
+                    shutil.copyfile(file_path, safe_temp_path)
+                    
+                    g_file = client.files.upload(file=safe_temp_path)
+                    gemini_files.append(g_file)
+                    uploaded_files_info.append(f"✅ הועלה בהצלחה לשרת: {filename}")
+                    
+                    if os.path.exists(safe_temp_path):
+                        os.remove(safe_temp_path)
+                except Exception as e:
+                    uploaded_files_info.append(f"❌ שגיאה בהעלאת {filename}: {e}")
+    return gemini_files, uploaded_files_info
+
+course_files_payload, file_status_log = upload_course_files()
+
+# --- יצירת אובייקט הצ'אט הרשמי של ה-SDK (מנהל את ההיסטוריה והקונטקסט בצורה תקינה) ---
+if "chat_session" not in st.session_state:
+    st.session_state.chat_session = client.chats.create(
+        model=target_model,
+        config=types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=0.3
+        )
+    )
+    # שליחת קבצי הקורס כהודעת פתיחה סמויה כדי שהמודל יכיר אותם לכל אורך השיחה
+    if course_files_payload:
+        init_message = ["להלן קבצי וחומרי הקורס הרשמיים שעליך להתבסס עליהם מעתה ואילך:", *course_files_payload]
+        st.session_state.chat_session.send_message(init_message)
 
 # --- לוח בקרה למרצה ---
 if lecturer_authenticated:
     st.markdown("---")
     st.subheader("📊 לוח בקרה וניהול למרצה")
-    st.success("חומרי הקורס נטענו בהצלחה ופועלים עם מודל 3.5-flash-lite!")
+    st.success("המערכת מחוברת עם מודל gemini-3.5-flash-lite וצ'אט מנוהל!")
     st.write("**סטטוס קבצי הקורס בתיקייה:**")
     for log_item in file_status_log:
         st.text(log_item)
     st.markdown("---")
 
-# הצגת היסטוריית ההודעות
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+# הצגת היסטוריית השיחה מתוך ה-chat_session הרשמי
+for message in st.session_state.chat_session.get_history():
+    role = "user" if message.role == "user" else "assistant"
+    for part in message.parts:
+        if hasattr(part, "text") and part.text:
+            # הסתרה של הודעת האתחול הראשונית של קבצי הקורס מהמסך של הסטודנט
+            if "להלן קבצי וחומרי הקורס הרשמיים" in part.text:
+                continue
+            with st.chat_message(role):
+                st.markdown(part.text)
 
-# עיבוד קבצים שהסטודנט מעלה בצד
-student_exam_text = ""
+# עיבוד קבצים שהסטודנט מעלה בצד (העלאה לשרת והכנה לשליחה ישירה)
+exam_payload = []
 if exam_files:
-    for uploaded_file in exam_files:
-        file_ext = uploaded_file.name.split('.')[-1].lower()
+    for index, uploaded_file in enumerate(exam_files):
         try:
-            if file_ext == "pdf":
-                reader = pypdf.PdfReader(uploaded_file)
-                pdf_text = ""
-                for page in reader.pages:
-                    t = page.extract_text()
-                    if t:
-                        pdf_text += t + "\n"
-                student_exam_text += f"\n\n--- [קובץ מבחן שהעלה הסטודנט: {uploaded_file.name}] ---\n{pdf_text}"
-            elif file_ext == "txt":
-                text_content = uploaded_file.getvalue().decode('utf-8')
-                student_exam_text += f"\n\n--- [טקסט שהעלה הסטודנט: {uploaded_file.name}] ---\n{text_content}"
+            ext = os.path.splitext(uploaded_file.name)[1]
+            temp_path = os.path.join(".", f"student_exam_{index}{ext}")
+            with open(temp_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            
+            g_uploaded = client.files.upload(file=temp_path)
+            exam_payload.append(g_uploaded)
+            
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
         except Exception as e:
-            st.sidebar.error(f"שגיאה בקריאת הקובץ {uploaded_file.name}: {e}")
+            st.sidebar.error(f"שגיאה בהעלאת הקובץ {uploaded_file.name}: {e}")
 
 # תיבת הקלט של המשתמש
 if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
-    full_prompt = user_input
-    if student_exam_text:
-        full_prompt += f"\n{student_exam_text}"
-
-    st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
         if exam_files:
             file_names = ", ".join([f.name for f in exam_files])
-            st.caption(f"📄 קבצים מצורפים למבחן: {file_names}")
+            st.caption(f"📄 קבצים מצורפים: {file_names}")
 
     try:
         with st.chat_message("assistant"):
-            with st.spinner("חושב ומנתח מתוך חומרי הקורס והמבחן..."):
-                # בניית ההיסטוריה המלאה עבור ה-SDK החדש
-                contents = []
+            with st.spinner("חושב ומנתח ישירות מתוך הקבצים..."):
+                # בניית הודעה שנשלחת ישירות ל-chat.send_message (תומך גם בטקסט וגם באובייקטי קבצים יחד!)
+                message_payload = [user_input]
+                if exam_payload:
+                    message_payload.extend(exam_payload)
                 
-                # בפעם הראשונה נצרף את חומרי הקורס כהקשר רקע למערכת
-                if len(st.session_state.messages) == 1 and course_context_text:
-                    contents.append(types.Content(role="user", parts=[types.Part.from_text(text=f"להלן חומרי הקורס הרשמיים שעליך להתבסס עליהם:\n{course_context_text}")]))
-                    contents.append(types.Content(role="model", parts=[types.Part.from_text(text="הבנתי היטב. קלטתי את כל חומרי הקורס ואפעל אך ורק לפיהם.")]))
-
-                # הוספת היסטוריית השיחה הקודמת
-                for m in st.session_state.messages[:-1]:
-                    contents.append(types.Content(role="user" if m["role"] == "user" else "model", parts=[types.Part.from_text(text=m["content"])]))
-                
-                # הוספת ההודעה הנוכחית עם תוכן הקבצים
-                contents.append(types.Content(role="user", parts=[types.Part.from_text(text=full_prompt)]))
-
-                response = client.models.generate_content(
-                    model=target_model,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        temperature=0.3
-                    )
-                )
-                
-                bot_reply = response.text
-                st.markdown(bot_reply)
-                st.session_state.messages.append({"role": "assistant", "content": bot_reply})
+                response = st.session_state.chat_session.send_message(message_payload)
+                st.markdown(response.text)
                 
     except Exception as e:
         st.error(f"אירעה שגיאה בשליחת ההודעה לשרת: {e}")
