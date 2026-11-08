@@ -68,7 +68,7 @@ system_instruction = """
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
 """
 
-# --- אתחול הלקוח והעלאת קבצים פעם אחת ב-Session ---
+# --- אתחול הלקוח והעלאת קבצי הקורס פעם אחת ב-Session ---
 @st.cache_resource
 def upload_course_files_once():
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -102,7 +102,7 @@ def upload_course_files_once():
         
     return gemini_files, uploaded_files_info
 
-# טעינת הקבצים פעם אחת
+# טעינת קבצי הקורס פעם אחת
 course_files_payload, file_status_log = upload_course_files_once()
 
 # יצירת מופע לקוח חדש ונקי לכל פעולה
@@ -117,7 +117,7 @@ if "messages" not in st.session_state:
 if lecturer_authenticated:
     st.markdown("---")
     st.subheader("📊 לוח בקרה וניהול למרצה")
-    st.success("הקבצים זמינים למורה הפרטי עם מודל 3.5 Flash!")
+    st.success("הקבצים זמינים למורה הפרטי עם מודל 3.5-flash-lite!")
     st.write("**סטטוס קבצי הקורס בתיקייה:**")
     for log_item in file_status_log:
         st.text(log_item)
@@ -128,12 +128,15 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# עיבוד קבצים שהסטודנט מעלה בצד
+# עיבוד קבצים שהסטודנט מעלה בצד (עם עקיפת שמות בעברית)
 exam_payload = []
 if exam_files:
-    for uploaded_file in exam_files:
+    for index, uploaded_file in enumerate(exam_files):
         try:
-            temp_path = os.path.join(".", "student_upload_" + uploaded_file.name)
+            ext = os.path.splitext(uploaded_file.name)[1]
+            safe_student_name = f"student_upload_{index}{ext}"
+            temp_path = os.path.join(".", safe_student_name)
+            
             with open(temp_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             
@@ -147,7 +150,6 @@ if exam_files:
 
 # תיבת הקלט של המשתמש
 if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
-    # הוספת הודעת המשתמש להיסטוריה
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
@@ -158,19 +160,16 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
     try:
         with st.chat_message("assistant"):
             with st.spinner("חושב ומנתח מתוך חומרי הקורס..."):
-                # בניית היסטוריית השיחה עבור ה-SDK החדש
                 contents = []
                 
                 # בפעם הראשונה, נצרף את קבצי הקורס כהקשר רקע למודל
                 if len(st.session_state.messages) == 1 and course_files_payload:
                     contents.extend(course_files_payload)
                 
-                # הוספת ההיסטוריה הקודמת לצורך רציפות השיחה
                 history_turns = []
                 for m in st.session_state.messages[:-1]:
                     history_turns.append(types.Content(role="user" if m["role"] == "user" else "model", parts=[types.Part.from_text(text=m["content"])]))
                 
-                # הוספת השאלה הנוכחית עם קבצי הסטודנט אם קיימים
                 current_parts = [types.Part.from_text(text=user_input)]
                 if exam_payload:
                     for ep in exam_payload:
@@ -184,7 +183,6 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
                 else:
                     final_contents = history_turns
 
-                # שליחת הבקשה למודל
                 response = client.models.generate_content(
                     model=target_model,
                     contents=final_contents,
@@ -196,8 +194,6 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
                 
                 bot_reply = response.text
                 st.markdown(bot_reply)
-                
-                # שמירת תשובת הבוט בהיסטוריה
                 st.session_state.messages.append({"role": "assistant", "content": bot_reply})
                 
     except Exception as e:
