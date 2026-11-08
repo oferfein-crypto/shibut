@@ -26,6 +26,19 @@ if "GEMINI_API_KEY" not in st.secrets:
     st.error("שגיאה: מפתח ה-GEMINI_API_KEY לא הוגדר בהגדרות ה-Secrets.")
     st.stop()
 
+# --- ניהול קובץ הנחיות מרצה גלובלי (Persistent Storage) ---
+INSTRUCTIONS_FILE = "lecturer_instructions.txt"
+
+def load_lecturer_instructions():
+    if os.path.exists(INSTRUCTIONS_FILE):
+        with open(INSTRUCTIONS_FILE, "r", encoding="utf-8") as f:
+            return f.read()
+    return ""
+
+def save_lecturer_instructions(text):
+    with open(INSTRUCTIONS_FILE, "w", encoding="utf-8") as f:
+        f.write(text)
+
 # --- סרגל צדי: קבצים להעלאה ומצב מרצה ---
 st.sidebar.markdown("---")
 st.sidebar.title("📁 קבצים להעלאה")
@@ -40,7 +53,7 @@ st.sidebar.title("🛠️ אזור מרצה")
 lecturer_mode_checkbox = st.sidebar.checkbox("הפעל מצב מרצה")
 
 lecturer_authenticated = False
-custom_lecturer_instruction = ""
+custom_lecturer_instruction = load_lecturer_instructions() # טעינה מהקובץ הפיזי הגלובלי
 
 if lecturer_mode_checkbox:
     entered_password = st.sidebar.text_input("הכנס סיסמת מרצה:", type="password")
@@ -49,18 +62,23 @@ if lecturer_mode_checkbox:
         st.sidebar.success("הזדהות הצליחה!")
         
         st.sidebar.markdown("---")
-        custom_lecturer_instruction = st.sidebar.text_area(
-            "⚙️ הנחיות מערכת נוספות (לעיני המרצה בלבד):",
-            value=st.session_state.get("custom_lecturer_instruction", ""),
-            placeholder="הכנס כאן הנחיות נוספות שהמודל יתחשב בהן..."
+        st.sidebar.subheader("⚙️ ניהול הנחיות גלובליות")
+        
+        new_instruction_input = st.sidebar.text_area(
+            "הנחיות מערכת נוספות (יוחלו על כל הסטודנטים):",
+            value=custom_lecturer_instruction,
+            height=150,
+            placeholder="הכנס כאן הנחיות שהמודל יתחשב בהן..."
         )
-        st.session_state["custom_lecturer_instruction"] = custom_lecturer_instruction
+        
+        if st.sidebar.button("💾 שמור הנחיות בקובץ הגלובלי"):
+            save_lecturer_instructions(new_instruction_input)
+            st.sidebar.success("ההנחיות נשמרו בהצלחה ועודכנו לכל המשתמשים!")
+            custom_lecturer_instruction = new_instruction_input
+            st.rerun()
     else:
         if entered_password:
             st.sidebar.error("סיסמה שגויה.")
-
-if not lecturer_authenticated and "custom_lecturer_instruction" in st.session_state:
-    custom_lecturer_instruction = st.session_state["custom_lecturer_instruction"]
 
 # --- הנחיות המערכת ---
 base_system_instruction = """
@@ -84,11 +102,12 @@ step_by_step_instruction = "אם אתה מקבל מהסטודנט שאלה, תמ
 
 system_instruction = f"{base_system_instruction}\n\n{step_by_step_instruction}"
 if custom_lecturer_instruction:
-    system_instruction += f"\n\nהנחיות נוספות מהמרצה:\n{custom_lecturer_instruction}"
+    system_instruction += f"\n\nהנחיות נוספות מהמרצה (גלובליות):\n{custom_lecturer_instruction}"
 
+# --- הגדרת המודל המעודכן ---
 target_model = 'gemini-3.8-flash'
 
-# --- יצירת Context Cache מרכזי ויציב בשרת (פעם אחת בלבד) ---
+# --- יצירת Context Cache מרכזי ויציב בשרת ---
 @st.cache_resource
 def get_or_create_course_cache():
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -115,7 +134,6 @@ def get_or_create_course_cache():
     if not uploaded_files:
         return None
         
-    # יצירת ה-Cache בשרתים של גוגל למשך שעתיים (TTL)
     cache_obj = client_temp.caches.create(
         model=target_model,
         config=types.CreateCachedContentConfig(
@@ -126,7 +144,6 @@ def get_or_create_course_cache():
     )
     return cache_obj.name
 
-# טעינת ה-Cache ברקע
 course_cache_name = get_or_create_course_cache()
 
 if "messages" not in st.session_state:
@@ -136,7 +153,11 @@ if "messages" not in st.session_state:
 if lecturer_authenticated:
     st.markdown("---")
     st.subheader("📊 לוח בקרה וניהול למרצה")
-    st.success("המערכת מחוברת עם מודל gemini-3.8-flash ומופעל בה מנגנון Context Caching לזמני תגובה מהירים!")
+    st.success("המערכת מחוברת עם מודל gemini-3.8-flash, Context Caching ושמירה קובצית!")
+    
+    with st.expander("🔍 הצג את הנחיות המערכת המלאות שמועברות כרגע למודל"):
+        st.code(system_instruction, language="text")
+        
     st.markdown("---")
 
 for message in st.session_state.messages:
@@ -179,19 +200,15 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
                 client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
                 
                 contents = []
-                
-                # אם הועלו קבצים ספציפיים על ידי הסטודנט, נצרף אותם לבקשה הנוכחית
                 if exam_payload:
                     contents.extend(exam_payload)
                     
-                # צרוף ההיסטוריה והשאלה הנוכחית
                 for m in st.session_state.messages[:-1]:
                     role_str = "סטודנט" if m["role"] == "user" else "מורה"
                     contents.append(f"{role_str}: {m['content']}")
                     
                 contents.append(user_input)
 
-                # הגדרת הקריאה המשתמשת ב-Context Cache המהיר
                 config_params = {
                     "temperature": 0.5,
                     "max_output_tokens": 8192
@@ -200,7 +217,6 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
                 if course_cache_name:
                     config_params["cached_content"] = course_cache_name
                 else:
-                    # גיבוי למקרה שהקאש לא נטען
                     config_params["system_instruction"] = system_instruction
 
                 response = client.models.generate_content(
