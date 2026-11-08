@@ -2,6 +2,7 @@ import streamlit as st
 from google import genai
 from google.genai import types
 import os
+import shutil
 
 st.set_page_config(page_title="שיבוט מחקר - המורה הפרטי שלך", page_icon="🎓")
 
@@ -126,8 +127,15 @@ def get_or_create_course_cache():
             for index, filename in enumerate(os.listdir(folder_path)):
                 file_path = os.path.join(folder_path, filename)
                 if filename.lower().endswith((".pdf", ".txt", ".pptx", ".png", ".jpg", ".jpeg")):
-                    g_file = client_temp.files.upload(file=file_path)
+                    ext = os.path.splitext(filename)[1]
+                    safe_temp_path = os.path.join(current_dir, f"cache_file_{index}{ext}")
+                    shutil.copy(file_path, safe_temp_path)
+                    
+                    g_file = client_temp.files.upload(file=safe_temp_path)
                     uploaded_files.append(g_file)
+                    
+                    if os.path.exists(safe_temp_path):
+                        os.remove(safe_temp_path)
                     
         if not uploaded_files:
             return None
@@ -167,16 +175,21 @@ if lecturer_authenticated:
         try:
             with st.spinner("סופר טוקנים מול השרת של גוגל..."):
                 client_count = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-                folder_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "course_files")
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                folder_path = os.path.join(current_dir, "course_files")
                 
                 if os.path.exists(folder_path):
                     total_tokens = 0
                     files_list = os.listdir(folder_path)
                     
-                    for filename in files_list:
+                    for index, filename in enumerate(files_list):
                         if filename.lower().endswith((".pdf", ".txt", ".pptx", ".png", ".jpg", ".jpeg")):
                             file_path = os.path.join(folder_path, filename)
-                            temp_g_file = client_count.files.upload(file=file_path)
+                            ext = os.path.splitext(filename)[1]
+                            safe_temp_path = os.path.join(current_dir, f"token_file_{index}{ext}")
+                            shutil.copy(file_path, safe_temp_path)
+                            
+                            temp_g_file = client_count.files.upload(file=safe_temp_path)
                             
                             token_resp = client_count.models.count_tokens(
                                 model=target_model,
@@ -188,6 +201,9 @@ if lecturer_authenticated:
                                 client_count.files.delete(name=temp_g_file.name)
                             except Exception:
                                 pass
+                                
+                            if os.path.exists(safe_temp_path):
+                                os.remove(safe_temp_path)
                     
                     st.metric(label="סך כל הטוקנים בחומרי הקורס", value=f"{total_tokens:,}")
                     
