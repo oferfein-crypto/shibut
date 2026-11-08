@@ -49,14 +49,14 @@ if lecturer_mode_checkbox:
         if entered_password:
             st.sidebar.error("סיסמה שגויה.")
 
-# --- הנחיות המערכת ---
+# --- הנחיות המערכת המעודכנות ---
 base_system_instruction = """
 תפקיד ומטרה:
 אתה מורה פרטי אקדמי ועוזר הוראה לקורס אקדמי בשיטות מחקר לתלמידי תואר ראשון בפסיכולוגיה. תפקידך לסייע לסטודנטים להבין את החומר, להתכונן למבחנים ולתרגל מושגים.
 
 בסיס הידע:
 כל התשובות שלך חייבות להתבסס בעיקר על הקבצים והחומרים שהועלו לקורס זה. 
-אם סטודנט שואל על נושא שאינו מופיע בחומרים, ענה בנימוס בדיוק במילים אלו: "נושא זה אינו מופיע בחומרי הקורס שהועלו." 
+אם סטודנט שואל על נושא שאינו מופיע בחומרים, ענה על סמך הידע שלך, אך ציין במפורש שאתה עונה לא על סמך חומר הקורס.
 
 חוקים והנחיות לגבי חומרי הקורס:
 1. המצגות הן החומר העיקרי והמעודכן ביותר.
@@ -67,13 +67,12 @@ base_system_instruction = """
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
 """
 
-# הוספת ההנחיה המפורשת בדיוק לפי בקשתך
+# הוספת הנחיית החשיבה המעמיקה שלב-אחר-שלב
 system_instruction = base_system_instruction + "\n\nאם אתה מקבל מהסטודנט שאלה, תמיד נתח את השאלה בצורה מעמיקה, הסבר שלב אחר שלב את תהליך החשיבה, והתייחס בקצרה מדוע החלופות האחרות שגויות."
 
-client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 target_model = 'gemini-3.5-flash-lite'
 
-# --- העלאת קבצי הקורס פעם אחת ושמירת ההפניות שלהם (עם עקיפת שמות בעברית) ---
+# --- העלאת קבצי הקורס פעם אחת ב-Session (עם עקיפת שמות בעברית) ---
 @st.cache_resource
 def upload_course_files():
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -108,40 +107,23 @@ def upload_course_files():
 
 course_files_payload, file_status_log = upload_course_files()
 
-# --- יצירת אובייקט הצ'אט הרשמי של ה-SDK (עם מודל 3.5-flash-lite וטמפרטורה 0.5) ---
-if "chat_session" not in st.session_state:
-    st.session_state.chat_session = client.chats.create(
-        model=target_model,
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            temperature=0.5
-        )
-    )
-    # שליחת קבצי הקורס כהודעת פתיחה סמויה כדי שהמודל יכיר אותם לכל אורך השיחה
-    if course_files_payload:
-        init_message = ["להלן קבצי וחומרי הקורס הרשמיים שעליך להתבסס עליהם מעתה ואילך:", *course_files_payload]
-        st.session_state.chat_session.send_message(init_message)
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 # --- לוח בקרה למרצה ---
 if lecturer_authenticated:
     st.markdown("---")
     st.subheader("📊 לוח בקרה וניהול למרצה")
-    st.success("המערכת מחוברת עם מודל gemini-3.5-flash-lite ורמת חשיבה מעמיקה (temperature=0.5)!")
+    st.success("המערכת מחוברת עם מודל gemini-3.5-flash-lite, רמת חשיבה 0.5 וניהול חיבור יציב!")
     st.write("**סטטוס קבצי הקורס בתיקייה:**")
     for log_item in file_status_log:
         st.text(log_item)
     st.markdown("---")
 
-# הצגת היסטוריית השיחה מתוך ה-chat_session הרשמי
-for message in st.session_state.chat_session.get_history():
-    role = "user" if message.role == "user" else "assistant"
-    for part in message.parts:
-        if hasattr(part, "text") and part.text:
-            # הסתרה של הודעת האתחול הראשונית של קבצי הקורס מהמסך
-            if "להלן קבצי וחומרי הקורס הרשמיים" in part.text:
-                continue
-            with st.chat_message(role):
-                st.markdown(part.text)
+# הצגת היסטוריית השיחה מתוך הזיכרון
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
 # עיבוד קבצים שהסטודנט מעלה בצד (עם עקיפת שמות בעברית)
 exam_payload = []
@@ -155,7 +137,8 @@ if exam_files:
             with open(temp_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             
-            g_uploaded = client.files.upload(file=temp_path)
+            client_temp = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+            g_uploaded = client_temp.files.upload(file=temp_path)
             exam_payload.append(g_uploaded)
             
             if os.path.exists(temp_path):
@@ -165,6 +148,7 @@ if exam_files:
 
 # תיבת הקלט של המשתמש
 if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
+    st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
         if exam_files:
@@ -174,12 +158,39 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
     try:
         with st.chat_message("assistant"):
             with st.spinner("מנתח את השאלה בצורה מעמיקה ובונה הסבר שלב-אחר-שלב..."):
-                message_payload = [user_input]
-                if exam_payload:
-                    message_payload.extend(exam_payload)
+                # אתחול לקוח חדש ונקי לכל שאלה – מונע לחלוטין את שגיאת 'client has been closed'
+                client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
                 
-                response = st.session_state.chat_session.send_message(message_payload)
-                st.markdown(response.text)
+                contents = []
+                
+                # צרוף קבצי הקורס כהקשר רקע למודל
+                if course_files_payload:
+                    contents.extend(course_files_payload)
+                    
+                # צרוף קבצי המבחן/תרגיל שהסטודנט העלה כעת
+                if exam_payload:
+                    contents.extend(exam_payload)
+                    
+                # צרוף היסטוריית השיחה הקודמת לצורך רציפות
+                for m in st.session_state.messages[:-1]:
+                    role_str = "סטודנט" if m["role"] == "user" else "מורה"
+                    contents.append(f"{role_str}: {m['content']}")
+                    
+                # צרוף השאלה הנוכחית
+                contents.append(user_input)
+
+                response = client.models.generate_content(
+                    model=target_model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.5
+                    )
+                )
+                
+                bot_reply = response.text
+                st.markdown(bot_reply)
+                st.session_state.messages.append({"role": "assistant", "content": bot_reply})
                 
     except Exception as e:
         st.error(f"אירעה שגיאה בשליחת ההודעה לשרת: {e}")
