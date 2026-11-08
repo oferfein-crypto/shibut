@@ -86,7 +86,7 @@ system_instruction = f"{base_system_instruction}\n\n{step_by_step_instruction}"
 if custom_lecturer_instruction:
     system_instruction += f"\n\nהנחיות נוספות מהמרצה:\n{custom_lecturer_instruction}"
 
-target_model = 'gemini-3.5-flash-lite'
+target_model = 'gemini-3.8-flash'
 
 # --- יצירת Context Cache מרכזי ויציב בשרת (פעם אחת בלבד) ---
 @st.cache_resource
@@ -136,7 +136,7 @@ if "messages" not in st.session_state:
 if lecturer_authenticated:
     st.markdown("---")
     st.subheader("📊 לוח בקרה וניהול למרצה")
-    st.success("המערכת מחוברת עם מודל gemini-3.5-flash-lite ומופעל בה מנגנון Context Caching לזמני תגובה מהירים!")
+    st.success("המערכת מחוברת עם מודל gemini-3.8-flash ומופעל בה מנגנון Context Caching לזמני תגובה מהירים!")
     st.markdown("---")
 
 for message in st.session_state.messages:
