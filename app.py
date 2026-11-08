@@ -130,7 +130,6 @@ def get_or_create_course_cache():
                     uploaded_files.append(g_file)
                     
         if not uploaded_files:
-            st.session_state["cache_error_debug"] = "תיקיית course_files ריקה או שלא נמצאו בה קבצים נתמכים."
             return None
             
         cache_obj = client_temp.caches.create(
@@ -144,7 +143,6 @@ def get_or_create_course_cache():
         return cache_obj.name
         
     except Exception as e:
-        st.session_state["cache_error_debug"] = str(e)
         return None
 
 course_cache_name = get_or_create_course_cache()
@@ -161,82 +159,30 @@ if lecturer_authenticated:
         st.success("המערכת מחוברת עם מודל gemini-3.8-flash ו-Context Caching פעיל!")
     else:
         st.warning("המערכת פועלת עם מודל gemini-3.8-flash (עובדת במצב גיבוי יציב).")
-        if "cache_error_debug" in st.session_state:
-            st.error(f"🔍 סיבת כישלון הקאש המדויקת: {st.session_state['cache_error_debug']}")
     
-    with st.expander("🔍 הצג את הנחיות המערכת המלאות שמועברות כרגע למודל"):
-        st.code(system_instruction, language="text")
-        
+    # --- כלי בדיקת טוקנים למרצה ---
     st.markdown("---")
-
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# עיבוד קבצים שהסטודנט מעלה בצד
-exam_payload = []
-if exam_files:
-    for index, uploaded_file in enumerate(exam_files):
+    st.subheader("🧮 בדיקת נפח טוקנים (Context Caching Check)")
+    if st.button("בדוק סך טוקנים של כל קבצי הקורס"):
         try:
-            ext = os.path.splitext(uploaded_file.name)[1]
-            safe_student_name = f"student_exam_{index}{ext}"
-            temp_path = os.path.join(".", safe_student_name)
-            
-            with open(temp_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
-            client_temp = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-            g_uploaded = client_temp.files.upload(file=temp_path)
-            exam_payload.append(g_uploaded)
-            
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except Exception as e:
-            st.sidebar.error(f"שגיאה בהעלאת הקובץ {uploaded_file.name}: {e}")
-
-# תיבת הקלט של המשתמש
-if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.markdown(user_input)
-        if exam_files:
-            file_names = ", ".join([f.name for f in exam_files])
-            st.caption(f"📄 קבצים מצורפים: {file_names}")
-
-    try:
-        with st.chat_message("assistant"):
-            with st.spinner("מנתח את השאלה..."):
-                client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+            with st.spinner("סופר טוקנים מול השרת של גוגל..."):
+                client_count = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+                folder_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "course_files")
                 
-                contents = []
-                if exam_payload:
-                    contents.extend(exam_payload)
+                if os.path.exists(folder_path):
+                    total_tokens = 0
+                    files_list = os.listdir(folder_path)
                     
-                for m in st.session_state.messages[:-1]:
-                    role_str = "סטודנט" if m["role"] == "user" else "מורה"
-                    contents.append(f"{role_str}: {m['content']}")
-                    
-                contents.append(user_input)
-
-                config_params = {
-                    "temperature": 0.5,
-                    "max_output_tokens": 8192
-                }
-                
-                if course_cache_name:
-                    config_params["cached_content"] = course_cache_name
-                else:
-                    config_params["system_instruction"] = system_instruction
-
-                response = client.models.generate_content(
-                    model=target_model,
-                    contents=contents,
-                    config=types.GenerateContentConfig(**config_params)
-                )
-                
-                bot_reply = response.text
-                st.markdown(bot_reply)
-                st.session_state.messages.append({"role": "assistant", "content": bot_reply})
-                
-    except Exception as e:
-        st.error(f"אירעה שגיאה בשליחת ההודעה לשרת: {e}")
+                    for filename in files_list:
+                        if filename.lower().endswith((".pdf", ".txt", ".pptx", ".png", ".jpg", ".jpeg")):
+                            file_path = os.path.join(folder_path, filename)
+                            temp_g_file = client_count.files.upload(file=file_path)
+                            
+                            token_resp = client_count.models.count_tokens(
+                                model=target_model,
+                                contents=[temp_g_file]
+                            )
+                            total_tokens += token_resp.total_tokens
+                            
+                            try:
+                                client_count
