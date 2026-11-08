@@ -2,7 +2,6 @@ import streamlit as st
 from google import genai
 from google.genai import types
 import os
-import shutil
 
 st.set_page_config(page_title="שיבוט מחקר - המורה הפרטי שלך", page_icon="🎓")
 
@@ -104,34 +103,34 @@ system_instruction = f"{base_system_instruction}\n\n{step_by_step_instruction}"
 if custom_lecturer_instruction:
     system_instruction += f"\n\nהנחיות נוספות מהמרצה (גלובליות):\n{custom_lecturer_instruction}"
 
-# --- הגדרת המודל המעודכן ---
+# --- הגדרת המודל והקאש החכם (מונע תקיעות טעינה) ---
 target_model = 'gemini-3.8-flash'
 
-# --- יצירת Context Cache מרכזי ויציב עם הגנה מפני נפילות (Try-Except) ---
 @st.cache_resource
 def get_or_create_course_cache():
     try:
+        client_temp = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+        
+        # 1. בדיקה האם כבר קיים קאש פעיל בשרתים של גוגל כדי לחסוך זמן טעינה ארוך
+        try:
+            existing_caches = client_temp.caches.list()
+            for c in existing_caches:
+                return c.name
+        except Exception:
+            pass
+            
+        # 2. אם אין קאש קיים, ניצור אותו פעם אחת בלבד מהתיקייה
         current_dir = os.path.dirname(os.path.abspath(__file__))
         folder_path = os.path.join(current_dir, "course_files")
-        
-        client_temp = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
         uploaded_files = []
         
         if os.path.exists(folder_path):
             for index, filename in enumerate(os.listdir(folder_path)):
                 file_path = os.path.join(folder_path, filename)
                 if filename.lower().endswith((".pdf", ".txt", ".pptx", ".png", ".jpg", ".jpeg")):
-                    try:
-                        ext = os.path.splitext(filename)[1]
-                        safe_temp_path = os.path.join(current_dir, f"cache_file_{index}{ext}")
-                        shutil.copyfile(file_path, safe_temp_path)
-                        g_file = client_temp.files.upload(file=safe_temp_path)
-                        uploaded_files.append(g_file)
-                        if os.path.exists(safe_temp_path):
-                            os.remove(safe_temp_path)
-                    except Exception as e:
-                        print(f"Error caching {filename}: {e}")
-                        
+                    g_file = client_temp.files.upload(file=file_path)
+                    uploaded_files.append(g_file)
+                    
         if not uploaded_files:
             return None
             
@@ -145,8 +144,7 @@ def get_or_create_course_cache():
         )
         return cache_obj.name
     except Exception as e:
-        # במקרה שבו הקאש נכשל (למשל במסלול חינמי), המערכת תחזיר None ותמשיך לעבוד כרגיל
-        print(f"Context Caching bypassed due to restriction: {e}")
+        print(f"Caching error: {e}")
         return None
 
 course_cache_name = get_or_create_course_cache()
@@ -161,7 +159,7 @@ if lecturer_authenticated:
     if course_cache_name:
         st.success("המערכת מחוברת עם מודל gemini-3.8-flash ו-Context Caching פעיל!")
     else:
-        st.warning("המערכת פועלת עם מודל gemini-3.8-flash (Context Caching לא זמין בחשבון הנוכחי, המערכת עובדת במצב גיבוי יציב).")
+        st.warning("המערכת פועלת עם מודל gemini-3.8-flash (עובדת במצב גיבוי יציב).")
     
     with st.expander("🔍 הצג את הנחיות המערכת המלאות שמועברות כרגע למודל"):
         st.code(system_instruction, language="text")
