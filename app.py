@@ -104,42 +104,48 @@ system_instruction = f"{base_system_instruction}\n\n{step_by_step_instruction}"
 if custom_lecturer_instruction:
     system_instruction += f"\n\nהנחיות נוספות מהמרצה (גלובליות):\n{custom_lecturer_instruction}"
 
-# --- הגדרת המודל והקאש החכם ---
+# --- הגדרת המודל ויצירת קאש חיה ללא קאש פנימי של Streamlit (לצורך דיבוג מוחלט) ---
 target_model = 'gemini-3.8-flash'
 
-@st.cache_resource
 def get_or_create_course_cache():
     try:
         client_temp = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
         
+        # שלב א': בדיקת קאשים קיימים
         try:
             existing_caches = client_temp.caches.list()
             for c in existing_caches:
-                return c.name
-        except Exception:
+                return c.name, None
+        except Exception as list_err:
             pass
             
+        # שלב ב': העלאת קבצים ויצירת קאש חדש
         current_dir = os.path.dirname(os.path.abspath(__file__))
         folder_path = os.path.join(current_dir, "course_files")
         uploaded_files = []
         
-        if os.path.exists(folder_path):
-            for index, filename in enumerate(os.listdir(folder_path)):
-                file_path = os.path.join(folder_path, filename)
-                if filename.lower().endswith((".pdf", ".txt", ".pptx", ".png", ".jpg", ".jpeg")):
-                    ext = os.path.splitext(filename)[1]
-                    safe_temp_path = os.path.join(current_dir, f"cache_file_{index}{ext}")
-                    shutil.copy(file_path, safe_temp_path)
-                    
-                    g_file = client_temp.files.upload(file=safe_temp_path)
-                    uploaded_files.append(g_file)
-                    
-                    if os.path.exists(safe_temp_path):
-                        os.remove(safe_temp_path)
-                    
-        if not uploaded_files:
-            return None
+        if not os.path.exists(folder_path):
+            return None, "תיקיית course_files לא נמצאה בשרת."
             
+        files_list = os.listdir(folder_path)
+        supported_files = [f for f in files_list if f.lower().endswith((".pdf", ".txt", ".pptx", ".png", ".jpg", ".jpeg"))]
+        
+        if not supported_files:
+            return None, "תיקיית course_files ריקה מקבצים נתמכים."
+            
+        for index, filename in enumerate(supported_files):
+            file_path = os.path.join(folder_path, filename)
+            ext = os.path.splitext(filename)[1]
+            safe_temp_path = os.path.join(current_dir, f"cache_file_{index}{ext}")
+            shutil.copy(file_path, safe_temp_path)
+            
+            g_file = client_temp.files.upload(file=safe_temp_path)
+            uploaded_files.append(g_file)
+            
+            if os.path.exists(safe_temp_path):
+                os.remove(safe_temp_path)
+                
+        # שלב ג': יצירת הקאש מול ה-API של גוגל ותפיסת השגיאה המדויקת
         cache_obj = client_temp.caches.create(
             model=target_model,
             config=types.CreateCachedContentConfig(
@@ -148,12 +154,14 @@ def get_or_create_course_cache():
                 ttl="7200s"
             )
         )
-        return cache_obj.name
+        return cache_obj.name, None
         
     except Exception as e:
-        return None
+        # מחזירים את המחרוזת המלאה של השגיאה החוצה
+        return None, str(e)
 
-course_cache_name = get_or_create_course_cache()
+# מריצים ישירות בלי שמירת סטטוס תקוע בזיכרון של Streamlit
+course_cache_name, cache_creation_error = get_or_create_course_cache()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -167,6 +175,8 @@ if lecturer_authenticated:
         st.success("המערכת מחוברת עם מודל gemini-3.8-flash ו-Context Caching פעיל!")
     else:
         st.warning("המערכת פועלת עם מודל gemini-3.8-flash (עובדת במצב גיבוי יציב).")
+        if cache_creation_error:
+            st.error(f"🔍 שגיאת ה-API המדויקת בעת יצירת הקאש:\n\n`{cache_creation_error}`")
     
     # --- כלי בדיקת טוקנים למרצה ---
     st.markdown("---")
@@ -205,90 +215,4 @@ if lecturer_authenticated:
                             if os.path.exists(safe_temp_path):
                                 os.remove(safe_temp_path)
                     
-                    st.metric(label="סך כל הטוקנים בחומרי הקורס", value=f"{total_tokens:,}")
-                    
-                    if total_tokens < 32768:
-                        st.warning("⚠️ נפח הטוקנים נמוך מ-32,768. זהו ההסבר החד-משמעי לכך שגוגל דוחה את יצירת הקאש (דרישת מינימום קשיחה של ה-API).")
-                    else:
-                        st.success("✅ נפח הטוקנים עובר את סף המינימום של גוגל (32k+).")
-                else:
-                    st.error("תיקיית course_files לא נמצאה בנתיב.")
-        except Exception as token_err:
-            st.error(f"שגיאה בחישוב הטוקנים: {token_err}")
-
-    with st.expander("🔍 הצג את הנחיות המערכת המלאות שמועברות כרגע למודל"):
-        st.code(system_instruction, language="text")
-        
-    st.markdown("---")
-
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# עיבוד קבצים שהסטודנט מעלה בצד
-exam_payload = []
-if exam_files:
-    for index, uploaded_file in enumerate(exam_files):
-        try:
-            ext = os.path.splitext(uploaded_file.name)[1]
-            safe_student_name = f"student_exam_{index}{ext}"
-            temp_path = os.path.join(".", safe_student_name)
-            
-            with open(temp_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
-            client_temp = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-            g_uploaded = client_temp.files.upload(file=temp_path)
-            exam_payload.append(g_uploaded)
-            
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except Exception as e:
-            st.sidebar.error(f"שגיאה בהעלאת הקובץ {uploaded_file.name}: {e}")
-
-# תיבת הקלט של המשתמש
-if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.markdown(user_input)
-        if exam_files:
-            file_names = ", ".join([f.name for f in exam_files])
-            st.caption(f"📄 קבצים מצורפים: {file_names}")
-
-    try:
-        with st.chat_message("assistant"):
-            with st.spinner("מנתח את השאלה..."):
-                client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-                
-                contents = []
-                if exam_payload:
-                    contents.extend(exam_payload)
-                    
-                for m in st.session_state.messages[:-1]:
-                    role_str = "סטודנט" if m["role"] == "user" else "מורה"
-                    contents.append(f"{role_str}: {m['content']}")
-                    
-                contents.append(user_input)
-
-                config_params = {
-                    "temperature": 0.5,
-                    "max_output_tokens": 8192
-                }
-                
-                if course_cache_name:
-                    config_params["cached_content"] = course_cache_name
-                else:
-                    config_params["system_instruction"] = system_instruction
-
-                response = client.models.generate_content(
-                    model=target_model,
-                    contents=contents,
-                    config=types.GenerateContentConfig(**config_params)
-                )
-                
-                bot_reply = response.text
-                st.markdown(bot_reply)
-                st.session_state.messages.append({"role": "assistant", "content": bot_reply})
-                
-    except Exception as e:
-        st.error(f"אירעה שגיאה בשליחת ההודעה לשרת: {e}")
+                    st.metric(label="סך כל הט
