@@ -15,6 +15,11 @@ import os
 import shutil
 import tempfile
 import time
+import uuid
+from urllib.parse import quote
+from zoneinfo import ZoneInfo
+
+import chat_store
 
 import requests
 import plotly.graph_objects as go
@@ -78,6 +83,222 @@ st.markdown(
     'שיבוט מחקר - המורה הפרטי שלך</h1>',
     unsafe_allow_html=True,
 )
+
+# ---------------------------------------------------------
+# Optional Google sign-in and persistent history / guest mode
+# ---------------------------------------------------------
+
+def is_google_logged_in():
+    # In Streamlit, st.user.is_logged_in doesn't exist without [auth] secrets.
+    try:
+        return bool(st.user.is_logged_in)
+    except (AttributeError, KeyError, RuntimeError):
+        return False
+
+
+def auth_configured():
+    try:
+        return bool(st.secrets.get("auth"))
+    except Exception:
+        return False
+
+
+logged_in = is_google_logged_in()
+if not logged_in and not st.session_state.get("guest_accepted", False):
+    st.markdown("### כניסה לעוזר הלמידה")
+    st.info(
+        "התחברות עם Google מאפשרת לשמור את השיחות ולחזור אליהן גם לאחר "
+        "סגירת הדפדפן או ממכשיר אחר. **ללא התחברות, השיחות לא יהיו זמינות "
+        "לך בכניסה הבאה.**"
+    )
+    st.caption(
+        "לצורך שיפור ההוראה, תוכן השיחות נשמר במאגר שהמרצה יכול לעיין בו, "
+        "גם בשימוש כאורח (ללא שם משתמש). אין לכתוב פרטים אישיים רגישים "
+        "בשאלות. שיחות אורח לא מועברות אוטומטית לחשבון Google בעת התחברות מאוחרת."
+    )
+    a, b = st.columns(2)
+    with a:
+        if auth_configured():
+            if st.button("התחבר באמצעות Google", use_container_width=True, type="primary"):
+                st.login()
+        else:
+            st.caption("כניסה באמצעות Google תהיה זמינה לאחר הגדרת OAuth ב-Secrets.")
+    with b:
+        if st.button("המשך כאורח — ללא שחזור שיחות", use_container_width=True):
+            st.session_state.guest_accepted = True
+            st.rerun()
+    st.stop()
+
+if logged_in:
+    st.sidebar.success("מחובר עם Google — השיחות נשמרות וניתן לשחזר אותן")
+    st.sidebar.caption(str(st.user.get("email", "")))
+    if st.sidebar.button("התנתק מחשבון Google"):
+        st.logout()
+else:
+    st.sidebar.warning("מצב אורח: לא תוכל לחזור לשיחות בכניסה הבאה.")
+    st.sidebar.caption("השיחות נשמרות ללא שם במאגר המרצה, אם Firestore הוגדר.")
+    if auth_configured() and st.sidebar.button("התחבר עם Google לשמירת שיחות עתידיות"):
+        st.login()
+
+@st.cache_resource(show_spinner=False)
+def get_chat_db():
+    secret_json = st.secrets.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")
+    if not secret_json:
+        return None
+    return chat_store.firestore_client(secret_json)
+
+try:
+    chat_db = get_chat_db()
+except Exception:
+    chat_db = None
+
+if chat_db is None:
+    st.warning(
+        "אחסון השיחות ב-Firestore עדיין לא פעיל. אפשר לתרגל, אבל "
+        "**השיחות אינן נשמרות לצמיתות כרגע**."
+    )
+
+if logged_in:
+    sub = str(st.user.get("sub", ""))
+    issuer = str(st.user.get("iss", ""))
+    pepper = st.secrets.get("USER_ID_PEPPER", "")
+    if not sub or not issuer or not pepper:
+        st.error("שמירת שיחות Google מחייבת USER_ID_PEPPER ומזהה משתמש מאומת.")
+        st.stop()
+    owner_key = chat_store.account_key(issuer, sub, pepper)
+    auth_mode = "google"
+else:
+    if "guest_owner" not in st.session_state:
+        st.session_state.guest_owner = chat_store.fresh_guest_owner()
+    owner_key = st.session_state.guest_owner
+    auth_mode = "guest"
+
+# Isolation between Google accounts and guests sharing the same browser session.
+if st.session_state.get("identity_key") != owner_key:
+    st.session_state.identity_key = owner_key
+    st.session_state.messages = []
+    st.session_state.active_thread_id = None
+    st.session_state.active_thread_initialized = False
+    st.session_state.thread_saved = False
+    st.session_state.pending_messages = []
+    st.session_state.upload_counter = 0
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_user_threads(user_key):
+    return chat_store.list_user_threads(chat_db, user_key, limit=80)
+
+
+def reset_current_chat():
+    st.session_state.messages = []
+    st.session_state.active_thread_id = None
+    st.session_state.active_thread_initialized = True
+    st.session_state.thread_saved = False
+    st.session_state.pending_messages = []
+    st.session_state.student_file_cache = {}
+    st.session_state.upload_counter += 1
+    if "history_picker" in st.session_state:
+        st.session_state.history_picker = "__new__"
+
+
+def load_existing_chat(thread_id):
+    if chat_db is None:
+        raise RuntimeError("מסד הנתונים אינו זמין")
+    meta, messages = chat_store.read_thread(chat_db, thread_id, owner_key)
+    if meta.get("auth_mode") != "google" or not logged_in:
+        raise PermissionError("אפשר לטעון רק שיחות של חשבון Google מחובר")
+    st.session_state.active_thread_id = thread_id
+    st.session_state.messages = messages
+    st.session_state.thread_saved = True
+    st.session_state.pending_messages = []
+    st.session_state.active_thread_initialized = True
+    st.session_state.student_file_cache = {}
+    st.session_state.upload_counter += 1
+
+
+def persist_pending_messages():
+    """Retry failures within the SAME Streamlit session; do not silently lose messages."""
+    if chat_db is None or not st.session_state.pending_messages:
+        return
+    if st.session_state.active_thread_id is None:
+        st.session_state.active_thread_id = chat_store.fresh_thread_id()
+    remaining = list(st.session_state.pending_messages)
+    for message in remaining:
+        try:
+            was_new_thread = not st.session_state.thread_saved
+            chat_store.append_message(
+                chat_db,
+                thread_id=st.session_state.active_thread_id,
+                owner_key=owner_key,
+                auth_mode=auth_mode,
+                message=message,
+                new_thread=not st.session_state.thread_saved,
+                first_title=next(
+                    (m["content"] for m in st.session_state.messages if m["role"] == "user"),
+                    "שיחה חדשה",
+                ),
+            )
+            st.session_state.thread_saved = True
+            st.session_state.pending_messages.pop(0)
+            if was_new_thread and logged_in:
+                cached_user_threads.clear(owner_key)
+        except Exception:
+            # Don't display internal service-account/credential information.
+            return
+
+
+def queue_for_storage(message):
+    if chat_db is None:
+        return
+    st.session_state.pending_messages.append(message)
+    persist_pending_messages()
+
+
+if logged_in and chat_db is not None:
+    try:
+        user_threads = cached_user_threads(owner_key)
+        if not st.session_state.active_thread_initialized:
+            if user_threads:
+                load_existing_chat(user_threads[0]["id"])
+            else:
+                st.session_state.active_thread_initialized = True
+    except Exception:
+        user_threads = []
+        st.warning("לא ניתן כרגע לטעון את השיחות הקודמות. נסה לרענן את הדף.")
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("השיחות שלי")
+    st.sidebar.button("+ שיחה חדשה", on_click=reset_current_chat, use_container_width=True)
+    options = ["__new__"] + [row["id"] for row in user_threads]
+    labels = {row["id"]: row.get("title", "שיחה") for row in user_threads}
+    options_selected = st.session_state.get("active_thread_id") or "__new__"
+    if options_selected not in options:
+        options_selected = "__new__"
+    if "history_picker" not in st.session_state:
+        st.session_state.history_picker = options_selected
+    picked = st.sidebar.selectbox(
+        "פתח שיחה קודמת", options,
+        format_func=lambda value: "בחר שיחה..." if value == "__new__" else labels.get(value, "שיחה"),
+        key="history_picker",
+    )
+    if picked != "__new__" and picked != st.session_state.active_thread_id:
+        try:
+            load_existing_chat(picked)
+            st.rerun()
+        except Exception:
+            st.sidebar.error("לא ניתן לטעון את השיחה שנבחרה.")
+    if not st.session_state.active_thread_initialized:
+        st.session_state.active_thread_initialized = True
+else:
+    st.session_state.active_thread_initialized = True
+    if not logged_in:
+        st.sidebar.button("+ שיחה חדשה (אורח)", on_click=reset_current_chat, use_container_width=True)
+
+# If a write previously failed, retry it before the next message.
+persist_pending_messages()
+if st.session_state.pending_messages:
+    st.warning("חלק מההודעות בשיחה הנוכחית טרם נשמרו עקב שגיאת תקשורת. "
+               "השאר את הדף פתוח ושלח הודעה נוספת כדי לנסות שוב.")
 
 if not st.secrets.get("GEMINI_API_KEY"):
     st.error("GEMINI_API_KEY אינו מוגדר ב-Secrets.")
@@ -204,11 +425,13 @@ exam_files = st.sidebar.file_uploader(
     "העלה מבחן, תרגיל, שאלה או כל קובץ אחר",
     type=["pdf", "png", "jpg", "jpeg", "txt"],
     accept_multiple_files=True,
+    key=f"student_upload_{st.session_state.upload_counter}",
 )
 
 st.sidebar.markdown("---")
 st.sidebar.title("🛠️ אזור מרצה")
 lecturer_authenticated = False
+chat_admin_authenticated = False
 try:
     custom_lecturer_instruction, lecturer_instructions_sha = load_lecturer_instructions_record()
 except Exception as exc:
@@ -222,8 +445,17 @@ except Exception as exc:
 if st.sidebar.checkbox("הפעל מצב מרצה"):
     entered_password = st.sidebar.text_input("הכנס סיסמת מרצה:", type="password")
     expected_password = st.secrets.get("LECTURER_PASSWORD", "")
+    lecturer_emails = {
+        email.strip().lower() for email in st.secrets.get("LECTURER_EMAILS", "").split(",")
+        if email.strip()
+    }
     if entered_password and expected_password and entered_password == expected_password:
         lecturer_authenticated = True
+        chat_admin_authenticated = (
+            logged_in
+            and st.user.get("email_verified") is True
+            and str(st.user.get("email", "")).lower() in lecturer_emails
+        )
         st.sidebar.success("הזדהות הצליחה")
         st.sidebar.markdown("---")
         st.sidebar.subheader("⚙️ ניהול הנחיות גלובליות")
@@ -252,7 +484,7 @@ if st.sidebar.checkbox("הפעל מצב מרצה"):
                 "(לכל היותר כ-60 שניות)."
             )
     elif entered_password:
-        st.sidebar.error("סיסמה שגויה")
+        st.sidebar.error("סיסמת המרצה שגויה.")
 
 base_system_instruction = """
 תפקיד ומטרה:
@@ -492,8 +724,17 @@ def make_history_contents(messages):
         text_content = message["content"]
         if message.get("graphic"):
             text_content += graphic_history_note(message["graphic"])
-        parts = [types.Part.from_text(text=text_content)]
+        available_files = []
         for f in message.get("files", []):
+            if f.get("uri"):
+                available_files.append(f)
+            elif f.get("name"):
+                text_content += (
+                    f"\n[הקובץ {f['name']} צורף בשיחה קודמת, אך תוכנו אינו זמין "
+                    "כעת. אל תסיק ממנו מידע; בקש להעלות אותו מחדש אם נחוץ.]"
+                )
+        parts = [types.Part.from_text(text=text_content)]
+        for f in available_files:
             parts.append(types.Part.from_uri(file_uri=f["uri"], mime_type=f["mime_type"]))
         result.append(types.Content(
             role="user" if message["role"] == "user" else "model",
@@ -865,8 +1106,6 @@ try:
 except Exception:
     slide_catalog = {}
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
 
 if lecturer_authenticated:
     st.markdown("---")
@@ -885,6 +1124,120 @@ if lecturer_authenticated:
     )
     with st.expander("🔍 הצג את הנחיות המערכת המלאות"):
         st.code(system_instruction, language="text")
+    st.markdown("---")
+    if not chat_admin_authenticated:
+        st.caption("לצפייה במאגר השיחות יש להתחבר עם חשבון Google מורשה של המרצה.")
+
+if chat_admin_authenticated:
+    st.subheader("📚 מאגר השיחות — לוח בקרה למרצה")
+    if chat_db is None:
+        st.error("Firestore אינו מחובר. הגדר FIREBASE_SERVICE_ACCOUNT_JSON ב-Secrets.")
+    else:
+        try:
+            recent = chat_store.recent_threads(chat_db, limit=250)
+            st.caption("המדדים והחיפוש להלן מבוססים על 250 השיחות האחרונות לכל היותר. "
+                       "ייצוא כל השיחות כולל גם שיחות ישנות יותר.")
+            total_recent = len(recent)
+            google_recent = sum(row.get("auth_mode") == "google" for row in recent)
+            guest_recent = total_recent - google_recent
+            c1, c2, c3 = st.columns(3)
+            c1.metric("שיחות במדגם", total_recent)
+            c2.metric("עם Google", google_recent)
+            c3.metric("שיחות אורח", guest_recent)
+            if recent:
+                per_day = {}
+                for row in recent:
+                    stamp = row.get("created_at")
+                    if stamp:
+                        day = stamp.astimezone(ZoneInfo("Asia/Jerusalem")).date().isoformat()
+                        per_day[day] = per_day.get(day, 0) + 1
+                if per_day:
+                    st.caption("שיחות חדשות לפי יום, מתוך המדגם")
+                    days = sorted(per_day)
+                    st.bar_chart({"תאריך": days, "שיחות": [per_day[d] for d in days]},
+                                 x="תאריך", y="שיחות")
+
+                filter_mode = st.selectbox("סוג התחברות", ["הכול", "Google", "אורח"])
+                title_query = st.text_input("חיפוש בכותרת השיחה", "").strip().lower()
+                with st.expander("סינון לפי תאריכים"):
+                    earliest = min(
+                        (r["created_at"].astimezone(ZoneInfo("Asia/Jerusalem")).date()
+                         for r in recent if r.get("created_at")),
+                        default=datetime.now(ZoneInfo("Asia/Jerusalem")).date(),
+                    )
+                    start_date = st.date_input("מתאריך", value=earliest, key="admin_date_start")
+                    end_date = st.date_input(
+                        "עד תאריך", value=datetime.now(ZoneInfo("Asia/Jerusalem")).date(),
+                        key="admin_date_end",
+                    )
+                display_rows = [
+                    row for row in recent
+                    if (filter_mode == "הכול" or
+                        row.get("auth_mode") == ("google" if filter_mode == "Google" else "guest"))
+                    and (not title_query or title_query in row.get("title", "").lower())
+                    and (not row.get("created_at") or
+                         start_date <= row["created_at"].astimezone(ZoneInfo("Asia/Jerusalem")).date() <= end_date)
+                ]
+                with st.expander("חיפוש בטקסט של שיחות"):
+                    st.caption("החיפוש מתבצע ב-100 שיחות לכל היותר מהמדגם המסונן, "
+                               "והוא עשוי לצרוך קריאות נוספות במסד הנתונים.")
+                    term = st.text_input("מילה או ביטוי מתוך ההודעות", key="admin_fulltext_term")
+                    if st.button("חפש בתמלילים", key="admin_fulltext_search") and term.strip():
+                        results = []
+                        for row in display_rows[:100]:
+                            if any(term.casefold() in str(msg.get("content", "")).casefold()
+                                   for msg in chat_store.read_messages(chat_db, row["id"])):
+                                results.append(row["id"])
+                        st.session_state.admin_content_results = results
+                        st.session_state.admin_content_search_term = term
+                    if "admin_content_results" in st.session_state:
+                        st.caption(
+                            f"נמצאו {len(st.session_state.admin_content_results)} שיחות המכילות "
+                            f"'{st.session_state.get('admin_content_search_term', '')}' "
+                            "(בהתאם למסננים בזמן ביצוע החיפוש)."
+                        )
+                        if st.checkbox("הצג להלן רק שיחות שנמצאו בחיפוש", key="admin_content_filter"):
+                            matches = set(st.session_state.admin_content_results)
+                            display_rows = [row for row in display_rows if row["id"] in matches]
+
+                st.caption(f"נמצאו {len(display_rows)} שיחות במדגם")
+                if display_rows:
+                    choices = {r["id"]: r for r in display_rows}
+                    chosen = st.selectbox(
+                        "עיון בתמליל שיחה", list(choices),
+                        format_func=lambda ident: (
+                            f"{choices[ident].get('title','שיחה')[:70]} — "
+                            f"{'Google' if choices[ident].get('auth_mode') == 'google' else 'אורח'}"
+                        ),
+                        key="admin_thread_select",
+                    )
+                    if chosen:
+                        selected = choices[chosen]
+                        st.caption("מזהה משתמש אנונימי: " + selected.get("owner_key", ""))
+                        for item in chat_store.read_messages(chat_db, chosen):
+                            with st.chat_message("user" if item.get("role") == "user" else "assistant"):
+                                st.markdown(item.get("content", ""))
+                                if item.get("graphic"):
+                                    st.caption("התשובה כוללת גרף או שקופית. נתוני התצוגה נשמרו.")
+                        st.download_button(
+                            "הורד שיחה זו (CSV)",
+                            chat_store.transcript_csv(chat_db, [selected]),
+                            file_name=f"shibut_thread_{chosen}.csv",
+                            mime="text/csv",
+                        )
+            if st.button("הכן ייצוא של כל השיחות (CSV)", key="admin_export_all"):
+                with st.spinner("מייצא את כל השיחות השמורות; פעולה זו צורכת קריאות Firestore..."):
+                    st.session_state.admin_export_data = chat_store.transcript_csv(
+                        chat_db, chat_store.all_threads(chat_db)
+                    )
+            if st.session_state.get("admin_export_data"):
+                st.download_button(
+                    "הורד את כל השיחות", st.session_state.admin_export_data,
+                    file_name="shibut_all_conversations.csv", mime="text/csv",
+                    key="admin_download_all",
+                )
+        except Exception:
+            st.error("לא ניתן לטעון כרגע את נתוני מאגר השיחות. בדוק את חיבור Firestore.")
     st.markdown("---")
 
 def generate_response(client, messages, cache_name):
@@ -918,6 +1271,26 @@ def generate_response_with_retry(client, messages, cache_name):
         raise
 
 
+# Text sharing: recipient receives only the chosen answer, not the whole conversation.
+def reply_share_actions(message):
+    if message.get("role") != "assistant":
+        return
+    text = str(message.get("content", ""))
+    if not text:
+        return
+    share_url = "https://wa.me/?text=" + quote("תשובה מתוך שיבוט מחקר:\n\n" + text)
+    a, b = st.columns([1, 1])
+    with a:
+        if len(share_url) <= 7000:  # Bound actual URL bytes, not Hebrew character count.
+            st.link_button("שתף ב-WhatsApp", share_url, use_container_width=True)
+        else:
+            st.caption("התשובה ארוכה מדי לשיתוף בקישור WhatsApp; השתמש בהעתקה.")
+    with b:
+        with st.popover("העתק תשובה", use_container_width=True):
+            st.caption("לחץ על סמל ההעתקה שבפינה של תיבת הטקסט.")
+            st.code(text, language=None, wrap_lines=True)
+
+
 # Render all messages, including the original slides and Plotly figures, on reruns.
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -929,6 +1302,8 @@ for message in st.session_state.messages:
                 render_graphic(message["graphic"], slide_catalog)
             except Exception as exc:
                 st.caption(f"לא ניתן להציג מחדש את הגרף: {exc}")
+        if message.get("role") == "assistant":
+            reply_share_actions(message)
 
 
 if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
@@ -943,8 +1318,12 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
         st.error(f"שגיאה בהעלאת קובץ סטודנט: {exc}")
         st.stop()
 
-    new_message = {"role": "user", "content": user_input, "files": current_files}
+    new_message = {
+        "id": uuid.uuid4().hex,
+        "role": "user", "content": user_input, "files": current_files,
+    }
     st.session_state.messages.append(new_message)
+    queue_for_storage(new_message)
     with st.chat_message("user"):
         st.markdown(user_input)
         if current_files:
@@ -989,8 +1368,14 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
                 st.markdown(bot_reply)
                 if graphic:
                     render_graphic(graphic, slide_catalog)
-                st.session_state.messages.append({
-                    "role": "assistant", "content": bot_reply, "graphic": graphic
-                })
+                assistant_message = {
+                    "id": uuid.uuid4().hex,
+                    "role": "assistant", "content": bot_reply, "graphic": graphic,
+                }
+                st.session_state.messages.append(assistant_message)
+                queue_for_storage(assistant_message)
+                reply_share_actions(assistant_message)
+                if st.session_state.pending_messages:
+                    st.warning("ההודעות עדיין לא נשמרו במסד הנתונים. השאר את הדף פתוח.")
             except Exception as exc:
                 st.error(f"אירעה שגיאה בשליחת ההודעה: {type(exc).__name__}: {exc}")
