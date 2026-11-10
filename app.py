@@ -1035,7 +1035,7 @@ def reply_share_actions(message):
     share_url = "https://wa.me/?text=" + quote("תשובה מתוך שיבוט מחקר:\n\n" + text)
     a, b = st.columns([1, 1])
     with a:
-        if len(share_url) <= 7000:  # App limit for the encoded share URL.
+        if len(share_url) <= 12_000:  # App limit for the encoded share URL.
             st.link_button("שתף ב-WhatsApp", share_url, use_container_width=True)
         else:
             st.caption("קישור השיתוף ארוך מדי. אפשר להעתיק את התשובה ולהדביק אותה בוואטסאפ.")
