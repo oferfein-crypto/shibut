@@ -1,6 +1,6 @@
 """Streamlit teaching assistant with explicit Gemini caching and safe fallback.
 
-Dependencies: streamlit, google-genai, python-pptx.
+Dependencies: streamlit, google-genai, python-pptx, requests, plotly, pymupdf, pydantic.
 Put source materials in ./course_files.
 """
 
@@ -8,12 +8,19 @@ from datetime import datetime, timedelta, timezone
 import base64
 from pathlib import Path
 import hashlib
+import json
+import math
+import re
 import os
 import shutil
 import tempfile
 import time
 
 import requests
+import plotly.graph_objects as go
+import pymupdf
+from pydantic import BaseModel, Field
+from typing import Literal
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -236,6 +243,8 @@ base_system_instruction = """
 4. בין הקבצים שהועלו יש גם תרגילים ופתרונות להם, למד גם אותם, ומבחנים.
 5. לכל מבחן שתי גרסאות: גרסא מעורבלת וגרסא (נקראת טופס 0) שבה תמיד התשובה הנכונה היא הראשונה (א), אלא אם כן כתוב אחרת בדפי ההסבר על המבחנים.
 6. בשניים מהמבחנים יש גם פתרונות מוסברים - למד גם אותם.
+7. כשמבקשים גרף, אין לצייר גרפים באמצעות תווי ASCII, Markdown או טבלאות כאילו היו תמונה. ממשק האפליקציה מטפל בגרפים אמיתיים באמצעות מנגנון תצוגה ייעודי.
+8. כאשר יש גם PPTX וגם PDF של אותה מצגת, הטקסט המחולץ מה-PPTX עדיף לפענוח הניסוח בעברית; ה-PDF מסייע בפירוש הגרפיקה והמבנה החזותי. אל תסתיר אי-ודאות באשר לנתונים או לשקופיות.
 """
 step_by_step_instruction = (
     "אם אתה מקבל מהסטודנט שאלה, הסבר את דרך הפתרון באופן ברור, "
@@ -454,7 +463,10 @@ def student_upload_parts(uploaded_files, client):
 def make_history_contents(messages):
     result = []
     for message in messages:
-        parts = [types.Part.from_text(text=message["content"])]
+        text_content = message["content"]
+        if message.get("graphic"):
+            text_content += graphic_history_note(message["graphic"])
+        parts = [types.Part.from_text(text=text_content)]
         for f in message.get("files", []):
             parts.append(types.Part.from_uri(file_uri=f["uri"], mime_type=f["mime_type"]))
         result.append(types.Content(
@@ -462,6 +474,284 @@ def make_history_contents(messages):
             parts=parts,
         ))
     return result
+
+
+# ---------------------------------------------------------
+# Visual explanations: original PDF slides + Plotly figures
+# ---------------------------------------------------------
+
+class PlotPoint(BaseModel):
+    x: str = Field(description="Axis value or category, including Hebrew labels")
+    y: float = Field(description="Numerical y value")
+
+
+class PlotSeries(BaseModel):
+    name: str = Field(description="Legend label, e.g. participants' age group")
+    points: list[PlotPoint] = Field(default_factory=list)
+
+
+class VisualAnswer(BaseModel):
+    mode: Literal["slide", "chart", "text"]
+    explanation: str = Field(description="Short helpful response in Hebrew, without ASCII graphics")
+    source_pdf: str = Field(default="", description="Exact filename of an available slide PDF")
+    slide_number: int = Field(default=0, description="1-based PDF page/slide number")
+    chart_type: Literal["line", "bar", "scatter", "histogram", "pie"] = "line"
+    title: str = ""
+    x_axis_label: str = ""
+    y_axis_label: str = ""
+    illustrative: bool = True
+    source_note: str = ""
+    series: list[PlotSeries] = Field(default_factory=list)
+
+
+GRAPH_CUE = re.compile(
+    r"גר[ףפ]|גרפים|תרשים|תרשימים|שקופית|שקופיות|דיאגרמ[הת]|צייר|שרטט|המחשה גרפית|"
+    r"(?:graph|plot|chart|scatter|histogram)", re.IGNORECASE
+)
+FOLLOWUP_CUE = re.compile(
+    r"שנה|תשנה|שינוי|עדכן|תעדכן|הוסף|תוסיף|תיקון|תקן|אותו|אותה|"
+    r"עכשיו|במקום|החלף|תראה שוב|עוד גרף", re.IGNORECASE
+)
+
+
+def is_visual_request(user_text, messages):
+    if GRAPH_CUE.search(user_text):
+        return True
+    prior_graphic = any(m.get("graphic") for m in messages[-5:-1])
+    return bool(prior_graphic and FOLLOWUP_CUE.search(user_text))
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def get_slide_catalog(manifest):
+    """Whitelisted PDFs: same base name as PPTX; never reveal unrelated course PDFs.
+
+    PDF export must contain one slide per page and preserve slide order.
+    """
+    pptx_stems = {
+        Path(name).stem.casefold()
+        for name, *_ in manifest if Path(name).suffix.lower() == ".pptx"
+    }
+    catalog = {}
+    for name, *_ in manifest:
+        path = COURSE_DIR / name
+        if path.suffix.lower() != ".pdf" or path.stem.casefold() not in pptx_stems:
+            continue
+        if "מאוחד" in path.stem:  # internal reference material is never displayed
+            continue
+        try:
+            with pymupdf.open(path) as doc:
+                if doc.page_count:
+                    catalog[name] = doc.page_count
+        except Exception:
+            # A malformed presentation PDF should not disable the teaching assistant.
+            continue
+    return catalog
+
+
+def original_slide_png(pdf_filename, page_number, catalog):
+    """Render exactly one vetted source page locally; do not expose other PDFs."""
+    if pdf_filename not in catalog:
+        raise ValueError("המצגת המבוקשת אינה זמינה להצגה כתמונה.")
+    if not isinstance(page_number, int) or not 1 <= page_number <= catalog[pdf_filename]:
+        raise ValueError("מספר השקופית אינו תקין.")
+    path = COURSE_DIR / pdf_filename
+    with pymupdf.open(path) as doc:
+        page = doc[page_number - 1]
+        pixmap = page.get_pixmap(matrix=pymupdf.Matrix(1.6, 1.6), alpha=False)
+        return pixmap.tobytes("png")
+
+
+def visual_task_instructions(catalog):
+    catalog_text = "\n".join(
+        f"- {name} ({count} שקופיות / עמודים)" for name, count in catalog.items()
+    ) or "(אין זוגות PPTX/PDF להצגת שקופית מקורית)"
+    return f"""
+הוראות לתצוגה חזותית לתשובה האחרונה בשיחה:
+- ענה בעברית באמצעות explanation ברור וקצר. אסור ליצור ציורים בתווי ASCII.
+- אם המשתמש ביקש לראות *גרף מקורי מתוך מצגת*, בחר mode=slide רק אם זיהית
+  בביטחון את שם ה-PDF ואת מספר השקופית המדויק התואמים לגרף המבוקש.
+  בחר אך ורק מתוך הקבצים ברשימת המקור למטה. אל תנחש מספר שקופית או שם קובץ.
+  המספר הוא מספר העמוד בקובץ PDF, החל מ-1; ה-PDF נוצר במצגת עם עמוד לשקופית.
+- אם המשתמש ביקש *ליצור גרף חדש*, או גרף להמחשת עיקרון מתודולוגי,
+  בחר mode=chart ותאר את נקודות הגרף באמצעות series/points.
+  עבור גרף אינטראקציה יש להשתמש בדרך כלל ב-chart_type=line, עם סדרות
+  נפרדות לכל קבוצה; סדר הנקודות על ציר X חייב להיות זהה בין הסדרות.
+  chart_type=scatter רק כאשר ציר X משתנה כמותי; bar להשוואת ממוצעים או שכיחויות;
+  histogram להצגת תדירויות במחלקות; pie להתפלגות קטגוריות של שלם אחד.
+- העתק ערכים אמיתיים בדיוק מחומרי הקורס או מפניית הסטודנט. אם לא נמסרו
+  נתונים מדויקים, השתמש בערכי דוגמה סבירים וקבע illustrative=true,
+  וציין במפורש ב-explanation וב-source_note שהנתונים להמחשה בלבד.
+  אין להציג ערכים מומצאים כנתונים אמפיריים.
+- אם אין לך די מידע לזהות שקופית מקורית, או שאי אפשר להפיק גרף בלי
+  להטעות, החזר mode=text והסבר מה חסר, או mode=chart אם המחשה
+  חדשה מותרת ומתאימה לבקשה. אל תמציא שקופית.
+- לכל סדרה עד 80 נקודות, ולכל תרשים עד 8 סדרות. x הוא מחרוזת, y מספר.
+- התייחס לסוג הגרף ולתוכן הנוכחי של הקורס; אל תחשוף שמות או תוכן
+  של חומרי עזר שהמרצה אסר לחשוף.
+
+קובצי PDF מאושרים להצגת *שקופיות מקוריות* (רק זוגות PPTX ו-PDF):
+{catalog_text}
+"""
+
+
+def history_with_visual_task(messages, catalog):
+    """Preserve conversation/files; add private machine-format hints to final turn."""
+    items = [dict(message) for message in messages]
+    items[-1]["content"] += "\n\n" + visual_task_instructions(catalog)
+    return make_history_contents(items)
+
+
+def visual_answer_from_model(client, messages, cache_name, catalog):
+    history = history_with_visual_task(messages, catalog)
+    if cache_name:
+        config = types.GenerateContentConfig(
+            cached_content=cache_name,
+            response_mime_type="application/json",
+            response_schema=VisualAnswer,
+            max_output_tokens=4096,
+        )
+        response = client.models.generate_content(model=MODEL, contents=history, config=config)
+    else:
+        if not course_resources:
+            raise RuntimeError("לא ניתן לענות ללא חומרי הקורס.")
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            response_mime_type="application/json",
+            response_schema=VisualAnswer,
+            max_output_tokens=4096,
+        )
+        contents = [types.Content(role="user", parts=resources_to_parts(course_resources))] + history
+        response = client.models.generate_content(model=MODEL, contents=contents, config=config)
+    if isinstance(response.parsed, VisualAnswer):
+        return response.parsed
+    if response.text:
+        return VisualAnswer.model_validate(json.loads(response.text))
+    raise RuntimeError("לא התקבלה תשובה גרפית תקינה מהמודל")
+
+
+def is_missing_cache_error(exc):
+    message = str(exc).lower()
+    return "404" in message or "not found" in message and "cached" in message
+
+
+def make_visual_response(client, messages, cache_name, catalog):
+    try:
+        return visual_answer_from_model(client, messages, cache_name, catalog)
+    except Exception as first_error:
+        if cache_name and is_missing_cache_error(first_error):
+            get_or_create_course_cache.clear()
+            return visual_answer_from_model(client, messages, None, catalog)
+        raise
+
+
+def build_plotly_figure(graph):
+    """Render only known chart types. Never evaluate code or HTML from the model."""
+    if not graph.get("series"):
+        raise ValueError("המודל לא סיפק נתונים לגרף")
+    if len(graph["series"]) > 8:
+        raise ValueError("הגרף מכיל יותר מדי סדרות")
+
+    kind = graph["chart_type"]
+    if kind not in {"line", "bar", "scatter", "histogram", "pie"}:
+        raise ValueError("סוג גרף אינו נתמך")
+    colors = ["#1670A8", "#E68531", "#16806B", "#9B61B5",
+              "#C13A51", "#6495ED", "#A28A43", "#536172"]
+    fig = go.Figure()
+    for idx, series in enumerate(graph["series"]):
+        points = series.get("points", [])
+        if not points or len(points) > 80:
+            raise ValueError("מספר הנקודות בגרף אינו תקין")
+        xs = [str(pt["x"]) for pt in points]
+        ys = [float(pt["y"]) for pt in points]
+        if not all(math.isfinite(y) for y in ys):
+            raise ValueError("ערכי הגרף חייבים להיות סופיים")
+        name = series.get("name") or f"קבוצה {idx + 1}"
+        color = colors[idx % len(colors)]
+        if kind == "line":
+            fig.add_trace(go.Scatter(x=xs, y=ys, name=name, mode="lines+markers",
+                                     line=dict(color=color, width=3), marker=dict(size=10)))
+        elif kind in {"bar", "histogram"}:
+            fig.add_trace(go.Bar(x=xs, y=ys, name=name, marker_color=color))
+        elif kind == "scatter":
+            try:
+                numeric_xs = [float(x) for x in xs]
+            except ValueError as exc:
+                raise ValueError("בתרשים פיזור יש לספק ערכי X מספריים") from exc
+            if not all(math.isfinite(x) for x in numeric_xs):
+                raise ValueError("ערכי X חייבים להיות מספרים סופיים")
+            fig.add_trace(go.Scatter(x=numeric_xs, y=ys, name=name, mode="markers",
+                                     marker=dict(color=color, size=10, opacity=0.85)))
+        else:  # pie: category labels / shares from one series
+            if idx > 0:
+                raise ValueError("גרף עוגה תומך בסדרה אחת בלבד")
+            if any(y < 0 for y in ys) or sum(ys) <= 0:
+                raise ValueError("גרף עוגה מחייב ערכים חיוביים")
+            fig.add_trace(go.Pie(labels=xs, values=ys, hole=0.25))
+
+    fig.update_layout(
+        title=dict(text=graph.get("title") or "גרף להמחשה", x=0.5),
+        xaxis_title=graph.get("x_axis_label", ""),
+        yaxis_title=graph.get("y_axis_label", ""),
+        template="plotly_white", font=dict(family="Arial, sans-serif", size=15),
+        colorway=colors,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1),
+        hovermode="closest" if kind == "scatter" else "x unified",
+        height=460, margin=dict(l=65, r=40, t=105, b=75),
+        barmode="group",
+    )
+    if kind == "histogram":
+        fig.update_layout(bargap=0.04)
+    if kind != "pie":
+        fig.update_yaxes(showgrid=True, zeroline=False, gridcolor="#e8edf2")
+    return fig
+
+
+def normalized_visual(answer, catalog):
+    """Return a safe JSON-serializable graphic descriptor for Streamlit session state."""
+    if answer.mode == "slide":
+        if answer.source_pdf not in catalog:
+            raise ValueError("לא זוהתה מצגת מקורית זמינה להצגה. ציין את שם המצגת ומספר השקופית.")
+        if answer.slide_number < 1 or answer.slide_number > catalog[answer.source_pdf]:
+            raise ValueError("לא זוהה מספר שקופית תקין. ציין את מספר השקופית.")
+        return {"type": "slide", "pdf": answer.source_pdf, "page": answer.slide_number}
+    if answer.mode == "chart":
+        graphic = {
+            "type": "chart",
+            "chart_type": answer.chart_type,
+            "title": answer.title,
+            "x_axis_label": answer.x_axis_label,
+            "y_axis_label": answer.y_axis_label,
+            "illustrative": answer.illustrative,
+            "source_note": answer.source_note,
+            "series": [series.model_dump() for series in answer.series],
+        }
+        build_plotly_figure(graphic)  # validation before storing or displaying
+        return graphic
+    return None
+
+
+def render_graphic(graphic, catalog):
+    if not graphic:
+        return
+    if graphic["type"] == "slide":
+        data = original_slide_png(graphic["pdf"], graphic["page"], catalog)
+        st.image(data, caption=f"שקופית מקורית: {graphic['pdf']} — עמוד {graphic['page']}",
+                 use_container_width=True)
+    elif graphic["type"] == "chart":
+        fig = build_plotly_figure(graphic)
+        st.plotly_chart(fig, use_container_width=True,
+                        config={"displaylogo": False, "responsive": True})
+        if graphic.get("illustrative"):
+            st.caption("הערכים בגרף הם נתוני המחשה, ולא תוצאות של מחקר אמפירי.")
+        if graphic.get("source_note"):
+            st.caption(graphic["source_note"])
+
+
+def graphic_history_note(graphic):
+    if graphic["type"] == "slide":
+        return f"\n[הוצגה שקופית: {graphic['pdf']}, עמוד {graphic['page']}]."
+    return "\n[נתוני הגרף שהוצג: " + json.dumps(graphic, ensure_ascii=False)[:4200] + "]"
 
 
 # Cache state and file availability.
@@ -479,6 +769,11 @@ except Exception as exc:
     materials_error = f"{type(exc).__name__}: {exc}"
     course_resources = []
 
+try:
+    slide_catalog = get_slide_catalog(manifest) if materials_error is None else {}
+except Exception:
+    slide_catalog = {}
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -494,19 +789,12 @@ if lecturer_authenticated:
         if cache_creation_error:
             st.error(f"שגיאת יצירת קאש: {cache_creation_error}")
     st.caption(
-        "חשוב: מצגות PPTX מועברות כטקסט בלבד. מומלץ להמיר אותן ל-PDF "
-        "כדי לשמר תרשימים, טבלאות ועיצוב."
+        "מצגות PPTX נקראות כטקסט. כאשר מצורף PDF בשם זהה, אפשר גם להציג "
+        "שקופיות מקוריות עם הגרפיקה שלהן. גרפים חדשים נוצרים באמצעות Plotly."
     )
     with st.expander("🔍 הצג את הנחיות המערכת המלאות"):
         st.code(system_instruction, language="text")
     st.markdown("---")
-
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        if message.get("files"):
-            st.caption("📄 קבצים מצורפים: " + ", ".join(f["name"] for f in message["files"]))
-
 
 def generate_response(client, messages, cache_name):
     history = make_history_contents(messages)
@@ -526,6 +814,30 @@ def generate_response(client, messages, cache_name):
         max_output_tokens=8192,
     )
     return client.models.generate_content(model=MODEL, contents=contents, config=config)
+
+
+def generate_response_with_retry(client, messages, cache_name):
+    try:
+        return generate_response(client, messages, cache_name)
+    except Exception as first_error:
+        if cache_name and is_missing_cache_error(first_error):
+            get_or_create_course_cache.clear()
+            st.info("הקאש הישן אינו זמין כרגע; קורא את חומרי הקורס ישירות.")
+            return generate_response(client, messages, None)
+        raise
+
+
+# Render all messages, including the original slides and Plotly figures, on reruns.
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+        if message.get("files"):
+            st.caption("📄 קבצים מצורפים: " + ", ".join(f["name"] for f in message["files"]))
+        if message.get("graphic"):
+            try:
+                render_graphic(message["graphic"], slide_catalog)
+            except Exception as exc:
+                st.caption(f"לא ניתן להציג מחדש את הגרף: {exc}")
 
 
 if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
@@ -550,18 +862,44 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
     with st.chat_message("assistant"):
         with st.spinner("מנתח את השאלה..."):
             try:
-                try:
-                    response = generate_response(client, st.session_state.messages, course_cache_name)
-                except Exception as first_error:
-                    # Only a known stale/missing cache error warrants a no-cache retry.
-                    if course_cache_name and "404" in str(first_error):
-                        get_or_create_course_cache.clear()
-                        st.info("מזהה הקאש אינו זמין כרגע; מנסה לקרוא את חומרי הקורס ישירות.")
-                        response = generate_response(client, st.session_state.messages, None)
-                    else:
-                        raise
-                bot_reply = response.text or "לא התקבלה תשובה טקסטואלית מהמודל."
+                graphic = None
+                if is_visual_request(user_input, st.session_state.messages):
+                    try:
+                        answer = make_visual_response(
+                            client, st.session_state.messages, course_cache_name, slide_catalog
+                        )
+                        bot_reply = answer.explanation or "להלן ההמחשה המבוקשת."
+                        try:
+                            graphic = normalized_visual(answer, slide_catalog)
+                        except ValueError as data_error:
+                            graphic = None
+                            bot_reply = (
+                                "לא הצלחתי להציג גרף או שקופית באופן אמין: "
+                                + str(data_error)
+                                + "\n\n" + (answer.explanation if answer.mode == "text" else
+                                               "אפשר לציין את שם המצגת ומספר השקופית, או לבקש גרף המחשה חדש.")
+                            )
+                    except Exception as visual_error:
+                        # Never let a visualization failure break ordinary Q&A.
+                        # The student receives a normal answer and a short diagnostic.
+                        response = generate_response_with_retry(
+                            client, st.session_state.messages, course_cache_name
+                        )
+                        bot_reply = response.text or "לא התקבלה תשובה טקסטואלית מהמודל."
+                        st.info("לא ניתן היה להציג גרף בבקשה זו; התשובה המילולית מוצגת כרגיל.")
+                        if lecturer_authenticated:
+                            st.caption(f"שגיאת גרפיקה (למרצה בלבד): {visual_error}")
+                else:
+                    response = generate_response_with_retry(
+                        client, st.session_state.messages, course_cache_name
+                    )
+                    bot_reply = response.text or "לא התקבלה תשובה טקסטואלית מהמודל."
+
                 st.markdown(bot_reply)
-                st.session_state.messages.append({"role": "assistant", "content": bot_reply})
+                if graphic:
+                    render_graphic(graphic, slide_catalog)
+                st.session_state.messages.append({
+                    "role": "assistant", "content": bot_reply, "graphic": graphic
+                })
             except Exception as exc:
                 st.error(f"אירעה שגיאה בשליחת ההודעה: {type(exc).__name__}: {exc}")
