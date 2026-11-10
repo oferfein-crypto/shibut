@@ -1,4 +1,7 @@
-streamlit
-google-genai
-python-pptx
-requests
+streamlit>=1.40,<2
+requests>=2.31,<3
+google-genai>=2.30,<3
+python-pptx>=1.0.2,<2
+plotly>=6.0,<7
+pymupdf>=1.24,<2
+pydantic>=2.6,<3
