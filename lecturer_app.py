@@ -46,12 +46,16 @@ st.markdown(
 st.title("שיבוט מחקר | ניהול למרצה")
 
 try:
-    allowed_email = st.secrets.get("LECTURER_EMAIL", "").strip().casefold()
+    allowed_emails = {
+        email.strip().casefold()
+        for email in st.secrets.get("LECTURER_EMAIL", "").split(",")
+        if email.strip()
+    }
     auth_configured = bool(st.secrets.get("auth"))
 except Exception:
-    allowed_email = ""
+    allowed_emails = set()
     auth_configured = False
-if not allowed_email or not auth_configured:
+if not allowed_emails or not auth_configured:
     st.info("יש להשלים את הגדרות הכניסה של אפליקציית המרצה.")
     st.stop()
 
@@ -64,7 +68,7 @@ if st.button("התנתק"):
     st.logout()
 if (
     st.user.get("email_verified") is not True
-    or str(st.user.get("email", "")).strip().casefold() != allowed_email
+    or str(st.user.get("email", "")).strip().casefold() not in allowed_emails
 ):
     st.error("לחשבון Google זה אין גישה לאפליקציית המרצה.")
     st.stop()
