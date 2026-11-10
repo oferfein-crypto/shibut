@@ -65,6 +65,15 @@ st.markdown(
         margin-left: 0 !important;
         list-style-position: outside;
     }
+    .stChatMessage [data-testid="stCaptionContainer"],
+    .stChatMessage [data-testid="stCaptionContainer"] p,
+    [data-testid="stPopoverBody"] [data-testid="stCaptionContainer"],
+    [data-testid="stPopoverBody"] [data-testid="stCaptionContainer"] p,
+    [data-testid="stPopoverBody"] pre,
+    [data-testid="stPopoverBody"] code {
+        direction: rtl !important;
+        text-align: right !important;
+    }
     .stChatInput textarea {
         direction: rtl !important;
         text-align: right !important;
@@ -1026,13 +1035,13 @@ def reply_share_actions(message):
     share_url = "https://wa.me/?text=" + quote("תשובה מתוך שיבוט מחקר:\n\n" + text)
     a, b = st.columns([1, 1])
     with a:
-        if len(share_url) <= 7000:  # Bound actual URL bytes, not Hebrew character count.
+        if len(share_url) <= 7000:  # App limit for the encoded share URL.
             st.link_button("שתף ב-WhatsApp", share_url, use_container_width=True)
         else:
-            st.caption("התשובה ארוכה מדי לשיתוף בקישור WhatsApp; השתמש בהעתקה.")
+            st.caption("קישור השיתוף ארוך מדי. אפשר להעתיק את התשובה ולהדביק אותה בוואטסאפ.")
     with b:
         with st.popover("העתק תשובה", use_container_width=True):
-            st.caption("לחץ על סמל ההעתקה שבפינה של תיבת הטקסט.")
+            st.caption("לחץ על סמל ההעתקה כדי להעתיק את התשובה במלואה.")
             st.code(text, language=None, wrap_lines=True)
 
 
