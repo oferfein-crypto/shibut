@@ -25,6 +25,20 @@ st.markdown(
         direction: rtl;
         text-align: right;
     }
+    /* Keep transcript text and list markers aligned at every nesting level. */
+    .stChatMessage [data-testid="stMarkdownContainer"],
+    .stChatMessage [data-testid="stMarkdownContainer"] :is(
+        p, h1, h2, h3, h4, h5, h6, blockquote, ul, ol, li
+    ) {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    .stChatMessage [data-testid="stMarkdownContainer"] :is(ul, ol) {
+        margin-inline: 0 !important;
+        padding-inline-start: 1.6rem !important;
+        padding-inline-end: 0 !important;
+        list-style-position: outside;
+    }
     </style>
     """,
     unsafe_allow_html=True,
