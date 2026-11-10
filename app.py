@@ -45,10 +45,24 @@ st.set_page_config(page_title="שיבוט מחקר - המורה הפרטי של�
 st.markdown(
     """
     <style>
-    /* Hebrew message text only: never apply RTL to Plotly's SVG elements. */
+    /* RTL for Markdown text and all nesting levels of lists in chat.
+       Scope to Markdown blocks only: never apply it to Plotly/SVG elements. */
     .stChatMessage [data-testid="stMarkdownContainer"] {
         direction: rtl !important;
         text-align: right !important;
+    }
+    .stChatMessage [data-testid="stMarkdownContainer"] :is(
+        p, h1, h2, h3, h4, h5, h6, blockquote, ul, ol, li
+    ) {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    /* Move list markers and indentation to the right, including sublists. */
+    .stChatMessage [data-testid="stMarkdownContainer"] :is(ul, ol) {
+        padding-left: 0 !important;
+        padding-right: 1.6rem !important;
+        margin-left: 0 !important;
+        list-style-position: outside;
     }
     .stChatInput textarea {
         direction: rtl !important;
