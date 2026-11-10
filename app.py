@@ -5,7 +5,6 @@ Put source materials in ./course_files.
 """
 
 from datetime import datetime, timedelta, timezone
-import base64
 from pathlib import Path
 import hashlib
 import json
@@ -17,11 +16,10 @@ import tempfile
 import time
 import uuid
 from urllib.parse import quote
-from zoneinfo import ZoneInfo
 
 import chat_store
+from lecturer_instructions import load_lecturer_instructions_record
 
-import requests
 import plotly.graph_objects as go
 import pymupdf
 from pydantic import BaseModel, Field
@@ -35,8 +33,6 @@ MODEL = "gemini-3.8-flash"
 CACHE_TTL = "7200s"  # Two hours on Google's servers
 APP_DIR = Path(__file__).resolve().parent
 COURSE_DIR = APP_DIR / "course_files"
-INSTRUCTIONS_FILE = APP_DIR / "lecturer_instructions.txt"
-GITHUB_INSTRUCTIONS_PATH = "lecturer_instructions.txt"
 SUPPORTED_EXTS = {".pdf", ".txt", ".png", ".jpg", ".jpeg", ".pptx"}
 MIME_TYPES = {
     ".pdf": "application/pdf",
@@ -80,6 +76,35 @@ st.markdown(
     .st-key-login_screen [data-testid="stCaptionContainer"] {
         direction: rtl;
         text-align: right;
+    }
+    [data-testid="stSidebar"] {
+        order: 1;
+        direction: rtl;
+        text-align: right;
+        left: auto;
+        right: 0;
+    }
+    [data-testid="stSidebar"][data-collapsed="true"] {
+        width: 0 !important;
+        min-width: 0 !important;
+        margin: 0 !important;
+        visibility: hidden;
+    }
+    [data-testid="stSidebar"] :is(p, h1, h2, h3, label, input, textarea) {
+        direction: rtl;
+        text-align: right;
+    }
+    [data-testid="stSidebar"] [data-baseweb="select"],
+    [data-testid="stSidebar"] button {
+        direction: rtl;
+        text-align: right;
+    }
+    [data-testid="stSidebarResizeHandle"] {
+        display: none;
+    }
+    [data-testid="stSidebarCollapsedControl"] {
+        left: auto;
+        right: 0;
     }
     </style>
     """,
@@ -322,112 +347,6 @@ def make_client():
     )
 
 
-def github_settings():
-    """Separate PRIVATE repository avoids redeploying the student app on every edit."""
-    repo = st.secrets.get("GITHUB_DATA_REPO", "").strip()
-    token = st.secrets.get("GITHUB_DATA_TOKEN", "").strip()
-    branch = st.secrets.get("GITHUB_DATA_BRANCH", "main").strip()
-    if not repo or not token:
-        return None
-    if len(repo.split("/")) != 2 or not all(repo.split("/")):
-        raise RuntimeError("GITHUB_DATA_REPO חייב להיות בפורמט owner/repository")
-    return repo, token, branch
-
-
-def github_headers(token):
-    return {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-
-def fetch_github_instructions(settings):
-    """Return (file text, GitHub blob SHA), or (None, None) when file does not exist."""
-    repo, token, branch = settings
-    url = f"https://api.github.com/repos/{repo}/contents/{GITHUB_INSTRUCTIONS_PATH}"
-    response = requests.get(
-        url, headers=github_headers(token), params={"ref": branch}, timeout=15
-    )
-    if response.status_code == 404:
-        # GitHub returns 404 for an inaccessible repository too: don't silently
-        # treat missing/incorrect credentials as a new instructions file.
-        check = requests.get(
-            f"https://api.github.com/repos/{repo}",
-            headers=github_headers(token), timeout=15,
-        )
-        check.raise_for_status()
-        if check.json().get("default_branch") != branch:
-            branch_check = requests.get(
-                f"https://api.github.com/repos/{repo}/branches/{branch}",
-                headers=github_headers(token), timeout=15,
-            )
-            branch_check.raise_for_status()
-        return None, None
-    response.raise_for_status()
-    data = response.json()
-    if data.get("type") != "file" or data.get("encoding") != "base64":
-        raise RuntimeError("תשובת GitHub לא מכילה קובץ טקסט תקין")
-    decoded = base64.b64decode(data["content"]).decode("utf-8")
-    return decoded, data["sha"]
-
-
-def legacy_instructions():
-    # Used only during migration, before the new GitHub data file is created.
-    if INSTRUCTIONS_FILE.exists():
-        return INSTRUCTIONS_FILE.read_text(encoding="utf-8")
-    return st.secrets.get("LECTURER_INSTRUCTIONS", "")
-
-
-@st.cache_data(ttl=60, show_spinner=False)
-def load_lecturer_instructions_record():
-    settings = github_settings()
-    if settings is None:
-        return legacy_instructions(), None
-    text, sha = fetch_github_instructions(settings)
-    if text is None:
-        return legacy_instructions(), None
-    return text, sha
-
-
-def save_lecturer_instructions(text, expected_sha):
-    settings = github_settings()
-    if settings is None:
-        raise RuntimeError(
-            "שמירה קבועה אינה מוגדרת. יש להוסיף GITHUB_DATA_REPO "
-            "ו-GITHUB_DATA_TOKEN ל-Secrets של Streamlit."
-        )
-    repo, token, branch = settings
-    current_text, current_sha = fetch_github_instructions(settings)
-    if current_sha != expected_sha:
-        raise RuntimeError(
-            "ההנחיות שונו ב-GitHub מאז שטענת את העמוד. "
-            "רענן את העמוד, בדוק את השינויים ונסה שוב."
-        )
-    if current_text == text:
-        return
-    payload = {
-        "message": "Update lecturer instructions from Streamlit",
-        "content": base64.b64encode(text.encode("utf-8")).decode("ascii"),
-        "branch": branch,
-    }
-    if current_sha is not None:
-        payload["sha"] = current_sha
-    response = requests.put(
-        f"https://api.github.com/repos/{repo}/contents/{GITHUB_INSTRUCTIONS_PATH}",
-        headers=github_headers(token), json=payload, timeout=20,
-    )
-    if response.status_code in (409, 422):
-        raise RuntimeError(
-            "GitHub דחה את השמירה. ייתכן שהקובץ השתנה במקביל; "
-            "רענן את הדף ונסה שוב."
-        )
-    response.raise_for_status()
-    # Share changes across all Streamlit sessions, then create a fresh Gemini
-    # cache fingerprint automatically from the updated system instruction.
-    load_lecturer_instructions_record.clear()
-
-
 st.sidebar.markdown("---")
 st.sidebar.title("📁 קבצים להעלאה")
 exam_files = st.sidebar.file_uploader(
@@ -437,63 +356,11 @@ exam_files = st.sidebar.file_uploader(
     key=f"student_upload_{st.session_state.upload_counter}",
 )
 
-st.sidebar.markdown("---")
-st.sidebar.title("🛠️ אזור מרצה")
-lecturer_authenticated = False
-chat_admin_authenticated = False
 try:
-    custom_lecturer_instruction, lecturer_instructions_sha = load_lecturer_instructions_record()
-except Exception as exc:
-    st.error(
-        "לא ניתן לטעון את הנחיות המרצה מ-GitHub. "
-        "האפליקציה נעצרה כדי שלא תענה בלי ההנחיות: "
-        f"{type(exc).__name__}: {exc}"
-    )
+    custom_lecturer_instruction, _ = load_lecturer_instructions_record()
+except Exception:
+    st.error("לא ניתן לטעון כרגע את הנחיות המרצה מ-GitHub. נסה שוב בעוד רגע.")
     st.stop()
-
-if st.sidebar.checkbox("הפעל מצב מרצה"):
-    entered_password = st.sidebar.text_input("הכנס סיסמת מרצה:", type="password")
-    expected_password = st.secrets.get("LECTURER_PASSWORD", "")
-    lecturer_emails = {
-        email.strip().lower() for email in st.secrets.get("LECTURER_EMAILS", "").split(",")
-        if email.strip()
-    }
-    if entered_password and expected_password and entered_password == expected_password:
-        lecturer_authenticated = True
-        chat_admin_authenticated = (
-            logged_in
-            and st.user.get("email_verified") is True
-            and str(st.user.get("email", "")).lower() in lecturer_emails
-        )
-        st.sidebar.success("הזדהות הצליחה")
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("⚙️ ניהול הנחיות גלובליות")
-        new_instruction = st.sidebar.text_area(
-            "הנחיות נוספות לכל הסטודנטים:",
-            value=custom_lecturer_instruction,
-            height=150,
-        )
-        if st.sidebar.button("💾 שמור הנחיות"):
-            try:
-                save_lecturer_instructions(new_instruction, lecturer_instructions_sha)
-            except Exception as exc:
-                st.sidebar.error(f"השמירה לא הצליחה: {type(exc).__name__}: {exc}")
-            else:
-                st.sidebar.success("ההנחיות נשמרו ב-GitHub ועודכנו לכל המשתמשים.")
-                st.rerun()
-        if github_settings() is None:
-            st.sidebar.warning(
-                "אחסון GitHub טרם הוגדר. ההנחיות עדיין נטענות מהמקור הישן, "
-                "ולא ניתן לשמור אותן לצמיתות עד להגדרת Secrets."
-            )
-        else:
-            st.sidebar.caption(
-                "ההנחיות נקראות ממאגר GitHub פרטי. "
-                "שינוי שנשמר יתעדכן עבור שאר המשתמשים ברענון הבא "
-                "(לכל היותר כ-60 שניות)."
-            )
-    elif entered_password:
-        st.sidebar.error("סיסמת המרצה שגויה.")
 
 base_system_instruction = """
 תפקיד ומטרה:
@@ -1100,13 +967,12 @@ try:
     manifest = get_manifest()
     course_resources = get_course_resources(manifest)
     fingerprint = course_fingerprint(manifest, system_instruction)
-    course_cache_name, cache_creation_error = get_or_create_course_cache(
+    course_cache_name, _ = get_or_create_course_cache(
         fingerprint, system_instruction, course_resources
     )
     materials_error = None
 except Exception as exc:
     course_cache_name = None
-    cache_creation_error = None
     materials_error = f"{type(exc).__name__}: {exc}"
     course_resources = []
 
@@ -1115,139 +981,6 @@ try:
 except Exception:
     slide_catalog = {}
 
-
-if lecturer_authenticated:
-    st.markdown("---")
-    st.subheader("📊 לוח בקרה וניהול למרצה")
-    if course_cache_name:
-        st.success(f"זוהה Context Cache עבור {MODEL}. מזהה: {course_cache_name}")
-    elif materials_error:
-        st.error(f"חומרי הקורס אינם זמינים: {materials_error}")
-    else:
-        st.warning("Explicit Caching לא הצליח; משתמשים בקובצי הקורס ישירות (Implicit Caching אפשרי).")
-        if cache_creation_error:
-            st.error(f"שגיאת יצירת קאש: {cache_creation_error}")
-    st.caption(
-        "מצגות PPTX נקראות כטקסט. כאשר מצורף PDF בשם זהה, אפשר גם להציג "
-        "שקופיות מקוריות עם הגרפיקה שלהן. גרפים חדשים נוצרים באמצעות Plotly."
-    )
-    with st.expander("🔍 הצג את הנחיות המערכת המלאות"):
-        st.code(system_instruction, language="text")
-    st.markdown("---")
-    if not chat_admin_authenticated:
-        st.caption("לצפייה במאגר השיחות יש להתחבר עם חשבון Google מורשה של המרצה.")
-
-if chat_admin_authenticated:
-    st.subheader("📚 מאגר השיחות — לוח בקרה למרצה")
-    if chat_db is None:
-        st.error("Firestore אינו מחובר. הגדר FIREBASE_SERVICE_ACCOUNT_JSON ב-Secrets.")
-    else:
-        try:
-            recent = chat_store.recent_threads(chat_db, limit=250)
-            st.caption("המדדים והחיפוש להלן מבוססים על 250 השיחות האחרונות לכל היותר. "
-                       "ייצוא כל השיחות כולל גם שיחות ישנות יותר.")
-            total_recent = len(recent)
-            google_recent = sum(row.get("auth_mode") == "google" for row in recent)
-            guest_recent = total_recent - google_recent
-            c1, c2, c3 = st.columns(3)
-            c1.metric("שיחות במדגם", total_recent)
-            c2.metric("עם Google", google_recent)
-            c3.metric("שיחות אורח", guest_recent)
-            if recent:
-                per_day = {}
-                for row in recent:
-                    stamp = row.get("created_at")
-                    if stamp:
-                        day = stamp.astimezone(ZoneInfo("Asia/Jerusalem")).date().isoformat()
-                        per_day[day] = per_day.get(day, 0) + 1
-                if per_day:
-                    st.caption("שיחות חדשות לפי יום, מתוך המדגם")
-                    days = sorted(per_day)
-                    st.bar_chart({"תאריך": days, "שיחות": [per_day[d] for d in days]},
-                                 x="תאריך", y="שיחות")
-
-                filter_mode = st.selectbox("סוג התחברות", ["הכול", "Google", "אורח"])
-                title_query = st.text_input("חיפוש בכותרת השיחה", "").strip().lower()
-                with st.expander("סינון לפי תאריכים"):
-                    earliest = min(
-                        (r["created_at"].astimezone(ZoneInfo("Asia/Jerusalem")).date()
-                         for r in recent if r.get("created_at")),
-                        default=datetime.now(ZoneInfo("Asia/Jerusalem")).date(),
-                    )
-                    start_date = st.date_input("מתאריך", value=earliest, key="admin_date_start")
-                    end_date = st.date_input(
-                        "עד תאריך", value=datetime.now(ZoneInfo("Asia/Jerusalem")).date(),
-                        key="admin_date_end",
-                    )
-                display_rows = [
-                    row for row in recent
-                    if (filter_mode == "הכול" or
-                        row.get("auth_mode") == ("google" if filter_mode == "Google" else "guest"))
-                    and (not title_query or title_query in row.get("title", "").lower())
-                    and (not row.get("created_at") or
-                         start_date <= row["created_at"].astimezone(ZoneInfo("Asia/Jerusalem")).date() <= end_date)
-                ]
-                with st.expander("חיפוש בטקסט של שיחות"):
-                    st.caption("החיפוש מתבצע ב-100 שיחות לכל היותר מהמדגם המסונן, "
-                               "והוא עשוי לצרוך קריאות נוספות במסד הנתונים.")
-                    term = st.text_input("מילה או ביטוי מתוך ההודעות", key="admin_fulltext_term")
-                    if st.button("חפש בתמלילים", key="admin_fulltext_search") and term.strip():
-                        results = []
-                        for row in display_rows[:100]:
-                            if any(term.casefold() in str(msg.get("content", "")).casefold()
-                                   for msg in chat_store.read_messages(chat_db, row["id"])):
-                                results.append(row["id"])
-                        st.session_state.admin_content_results = results
-                        st.session_state.admin_content_search_term = term
-                    if "admin_content_results" in st.session_state:
-                        st.caption(
-                            f"נמצאו {len(st.session_state.admin_content_results)} שיחות המכילות "
-                            f"'{st.session_state.get('admin_content_search_term', '')}' "
-                            "(בהתאם למסננים בזמן ביצוע החיפוש)."
-                        )
-                        if st.checkbox("הצג להלן רק שיחות שנמצאו בחיפוש", key="admin_content_filter"):
-                            matches = set(st.session_state.admin_content_results)
-                            display_rows = [row for row in display_rows if row["id"] in matches]
-
-                st.caption(f"נמצאו {len(display_rows)} שיחות במדגם")
-                if display_rows:
-                    choices = {r["id"]: r for r in display_rows}
-                    chosen = st.selectbox(
-                        "עיון בתמליל שיחה", list(choices),
-                        format_func=lambda ident: (
-                            f"{choices[ident].get('title','שיחה')[:70]} — "
-                            f"{'Google' if choices[ident].get('auth_mode') == 'google' else 'אורח'}"
-                        ),
-                        key="admin_thread_select",
-                    )
-                    if chosen:
-                        selected = choices[chosen]
-                        st.caption("מזהה משתמש אנונימי: " + selected.get("owner_key", ""))
-                        for item in chat_store.read_messages(chat_db, chosen):
-                            with st.chat_message("user" if item.get("role") == "user" else "assistant"):
-                                st.markdown(item.get("content", ""))
-                                if item.get("graphic"):
-                                    st.caption("התשובה כוללת גרף או שקופית. נתוני התצוגה נשמרו.")
-                        st.download_button(
-                            "הורד שיחה זו (CSV)",
-                            chat_store.transcript_csv(chat_db, [selected]),
-                            file_name=f"shibut_thread_{chosen}.csv",
-                            mime="text/csv",
-                        )
-            if st.button("הכן ייצוא של כל השיחות (CSV)", key="admin_export_all"):
-                with st.spinner("מייצא את כל השיחות השמורות; פעולה זו צורכת קריאות Firestore..."):
-                    st.session_state.admin_export_data = chat_store.transcript_csv(
-                        chat_db, chat_store.all_threads(chat_db)
-                    )
-            if st.session_state.get("admin_export_data"):
-                st.download_button(
-                    "הורד את כל השיחות", st.session_state.admin_export_data,
-                    file_name="shibut_all_conversations.csv", mime="text/csv",
-                    key="admin_download_all",
-                )
-        except Exception:
-            st.error("לא ניתן לטעון כרגע את נתוני מאגר השיחות. בדוק את חיבור Firestore.")
-    st.markdown("---")
 
 def generate_response(client, messages, cache_name):
     history = make_history_contents(messages)
@@ -1358,7 +1091,7 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
                                 + "\n\n" + (answer.explanation if answer.mode == "text" else
                                                "אפשר לציין את שם המצגת ומספר השקופית, או לבקש גרף המחשה חדש.")
                             )
-                    except Exception as visual_error:
+                    except Exception:
                         # Never let a visualization failure break ordinary Q&A.
                         # The student receives a normal answer and a short diagnostic.
                         response = generate_response_with_retry(
@@ -1366,8 +1099,6 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
                         )
                         bot_reply = response.text or "לא התקבלה תשובה טקסטואלית מהמודל."
                         st.info("לא ניתן היה להציג גרף בבקשה זו; התשובה המילולית מוצגת כרגיל.")
-                        if lecturer_authenticated:
-                            st.caption(f"שגיאת גרפיקה (למרצה בלבד): {visual_error}")
                 else:
                     response = generate_response_with_retry(
                         client, st.session_state.messages, course_cache_name
