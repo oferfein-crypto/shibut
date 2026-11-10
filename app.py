@@ -99,6 +99,9 @@ st.markdown(
         direction: rtl;
         text-align: right;
     }
+    [data-testid="stSidebar"][data-collapsed="false"] [data-testid="stSidebarCollapseButton"] {
+        visibility: visible;
+    }
     [data-testid="stSidebarResizeHandle"] {
         display: none;
     }
