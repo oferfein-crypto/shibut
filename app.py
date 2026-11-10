@@ -45,13 +45,25 @@ st.set_page_config(page_title="שיבוט מחקר - המורה הפרטי של�
 st.markdown(
     """
     <style>
-    .stChatMessage, .stChatMessage * {direction: rtl !important; text-align: right !important;}
-    .stChatInput textarea {direction: rtl !important; text-align: right !important;}
+    /* Hebrew message text only: never apply RTL to Plotly's SVG elements. */
+    .stChatMessage [data-testid="stMarkdownContainer"] {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    .stChatInput textarea {
+        direction: rtl !important;
+        text-align: right !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
-st.title("שיבוט מחקר - המורה הפרטי שלך")
+# Use a semantic H1 with explicit RTL so alignment works across Streamlit versions.
+st.markdown(
+    '<h1 dir="rtl" style="direction:rtl; text-align:right; width:100%;">'
+    'שיבוט מחקר - המורה הפרטי שלך</h1>',
+    unsafe_allow_html=True,
+)
 
 if not st.secrets.get("GEMINI_API_KEY"):
     st.error("GEMINI_API_KEY אינו מוגדר ב-Secrets.")
@@ -644,6 +656,13 @@ def make_visual_response(client, messages, cache_name, catalog):
         raise
 
 
+# Shared palette for Plotly traces and the separate, properly RTL HTML legend.
+CHART_COLORS = (
+    "#1670A8", "#E68531", "#16806B", "#9B61B5",
+    "#C13A51", "#6495ED", "#A28A43", "#536172",
+)
+
+
 def build_plotly_figure(graph):
     """Render only known chart types. Never evaluate code or HTML from the model."""
     if not graph.get("series"):
@@ -654,8 +673,7 @@ def build_plotly_figure(graph):
     kind = graph["chart_type"]
     if kind not in {"line", "bar", "scatter", "histogram", "pie"}:
         raise ValueError("סוג גרף אינו נתמך")
-    colors = ["#1670A8", "#E68531", "#16806B", "#9B61B5",
-              "#C13A51", "#6495ED", "#A28A43", "#536172"]
+    colors = CHART_COLORS
     fig = go.Figure()
     for idx, series in enumerate(graph["series"]):
         points = series.get("points", [])
@@ -686,7 +704,10 @@ def build_plotly_figure(graph):
                 raise ValueError("גרף עוגה תומך בסדרה אחת בלבד")
             if any(y < 0 for y in ys) or sum(ys) <= 0:
                 raise ValueError("גרף עוגה מחייב ערכים חיוביים")
-            fig.add_trace(go.Pie(labels=xs, values=ys, hole=0.25))
+            fig.add_trace(go.Pie(
+                labels=xs, values=ys, hole=0.25,
+                marker=dict(colors=[colors[i % len(colors)] for i in range(len(xs))]),
+            ))
 
     fig.update_layout(
         title=dict(text=graph.get("title") or "גרף להמחשה", x=0.5),
@@ -694,10 +715,11 @@ def build_plotly_figure(graph):
         yaxis_title=graph.get("y_axis_label", ""),
         template="plotly_white", font=dict(family="Arial, sans-serif", size=15),
         colorway=colors,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                    xanchor="right", x=1),
+        # Plotly's SVG legend can clip/misorder Hebrew. Render an HTML legend
+        # outside the chart, with explicit RTL and the exact same colors.
+        showlegend=False,
         hovermode="closest" if kind == "scatter" else "x unified",
-        height=460, margin=dict(l=65, r=40, t=105, b=75),
+        height=450, margin=dict(l=65, r=40, t=82, b=72),
         barmode="group",
     )
     if kind == "histogram":
@@ -731,6 +753,58 @@ def normalized_visual(answer, catalog):
     return None
 
 
+def chart_legend_html(graph):
+    """Build a safe browser-native RTL legend aligned with Plotly trace colors.
+
+    Rendering legend labels in regular HTML (not Plotly SVG) prevents Hebrew
+    names from being clipped or appearing in the wrong visual order.
+    """
+    from html import escape
+
+    kind = graph.get("chart_type")
+    series = graph.get("series", [])
+    if kind == "pie":
+        if not series:
+            return ""
+        labels = [str(point["x"]) for point in series[0].get("points", [])]
+    elif len(series) > 1:
+        labels = [str(item.get("name") or f"קבוצה {i+1}") for i, item in enumerate(series)]
+    else:
+        return ""  # For a single series, a legend usually adds no information.
+
+    entries = []
+    for idx, label in enumerate(labels):
+        color = CHART_COLORS[idx % len(CHART_COLORS)]
+        if kind == "line":
+            symbol = (
+                f'<span aria-hidden="true" style="display:inline-block; flex:none; '
+                f'width:25px; border-top:3px solid {color};"></span>'
+            )
+        elif kind == "scatter":
+            symbol = (
+                f'<span aria-hidden="true" style="display:inline-block; flex:none; '
+                f'width:11px; height:11px; border-radius:50%; background:{color};"></span>'
+            )
+        else:
+            symbol = (
+                f'<span aria-hidden="true" style="display:inline-block; flex:none; '
+                f'width:13px; height:13px; border-radius:2px; background:{color};"></span>'
+            )
+        entries.append(
+            '<span role="listitem" style="display:inline-flex; direction:rtl; '
+            'align-items:center; gap:8px; white-space:nowrap;">'
+            + symbol + '<bdi dir="auto">' + escape(label) + '</bdi></span>'
+        )
+
+    return (
+        '<div role="list" aria-label="מקרא הגרף" dir="rtl" '
+        'style="display:flex; direction:rtl; flex-wrap:wrap; '
+        'justify-content:center; align-items:center; gap:10px 24px; '
+        'padding:0 8px 16px; font-size:15px; line-height:1.6;">'
+        + "".join(entries) + '</div>'
+    )
+
+
 def render_graphic(graphic, catalog):
     if not graphic:
         return
@@ -742,6 +816,9 @@ def render_graphic(graphic, catalog):
         fig = build_plotly_figure(graphic)
         st.plotly_chart(fig, use_container_width=True,
                         config={"displaylogo": False, "responsive": True})
+        legend_html = chart_legend_html(graphic)
+        if legend_html:
+            st.markdown(legend_html, unsafe_allow_html=True)
         if graphic.get("illustrative"):
             st.caption("הערכים בגרף הם נתוני המחשה, ולא תוצאות של מחקר אמפירי.")
         if graphic.get("source_note"):
