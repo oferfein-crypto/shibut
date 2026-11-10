@@ -1,7 +1,8 @@
-streamlit>=1.40,<2
-requests>=2.31,<3
+streamlit[auth]>=1.66.0,<2
 google-genai>=2.30,<3
 python-pptx>=1.0.2,<2
+requests>=2.31,<3
 plotly>=6.0,<7
 pymupdf>=1.24,<2
 pydantic>=2.6,<3
+firebase-admin>=6.9,<9
