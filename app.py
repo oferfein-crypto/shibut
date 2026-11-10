@@ -73,6 +73,14 @@ st.markdown(
         direction: rtl !important;
         text-align: right !important;
     }
+    .st-key-login_screen {
+        direction: rtl;
+    }
+    .st-key-login_screen [data-testid="stMarkdownContainer"],
+    .st-key-login_screen [data-testid="stCaptionContainer"] {
+        direction: rtl;
+        text-align: right;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -105,28 +113,29 @@ def auth_configured():
 
 logged_in = is_google_logged_in()
 if not logged_in and not st.session_state.get("guest_accepted", False):
-    st.markdown("### כניסה לעוזר הלמידה")
-    st.info(
-        "התחברות עם Google מאפשרת לשמור את השיחות ולחזור אליהן גם לאחר "
-        "סגירת הדפדפן או ממכשיר אחר. **ללא התחברות, השיחות לא יהיו זמינות "
-        "לך בכניסה הבאה.**"
-    )
-    st.caption(
-        "לצורך שיפור ההוראה, תוכן השיחות נשמר במאגר שהמרצה יכול לעיין בו, "
-        "גם בשימוש כאורח (ללא שם משתמש). אין לכתוב פרטים אישיים רגישים "
-        "בשאלות. שיחות אורח לא מועברות אוטומטית לחשבון Google בעת התחברות מאוחרת."
-    )
-    a, b = st.columns(2)
-    with a:
-        if auth_configured():
-            if st.button("התחבר באמצעות Google", use_container_width=True, type="primary"):
-                st.login()
-        else:
-            st.caption("כניסה באמצעות Google תהיה זמינה לאחר הגדרת OAuth ב-Secrets.")
-    with b:
-        if st.button("המשך כאורח — ללא שחזור שיחות", use_container_width=True):
-            st.session_state.guest_accepted = True
-            st.rerun()
+    with st.container(key="login_screen"):
+        st.markdown("### כניסה לעוזר הלמידה")
+        st.info(
+            "התחברות עם Google מאפשרת לשמור את השיחות ולחזור אליהן גם לאחר "
+            "סגירת הדפדפן או ממכשיר אחר. **ללא התחברות, השיחות לא יהיו זמינות "
+            "לך בכניסה הבאה.**"
+        )
+        st.caption(
+            "לצורך שיפור ההוראה, תוכן השיחות נשמר במאגר שהמרצה יכול לעיין בו, "
+            "גם בשימוש כאורח (ללא שם משתמש). אין לכתוב פרטים אישיים רגישים "
+            "בשאלות. שיחות אורח לא מועברות אוטומטית לחשבון Google בעת התחברות מאוחרת."
+        )
+        a, b = st.columns(2)
+        with a:
+            if auth_configured():
+                if st.button("התחבר באמצעות Google", use_container_width=True, type="primary"):
+                    st.login()
+            else:
+                st.caption("כניסה באמצעות Google תהיה זמינה לאחר הגדרת OAuth ב-Secrets.")
+        with b:
+            if st.button("המשך כאורח — ללא שחזור שיחות", use_container_width=True):
+                st.session_state.guest_accepted = True
+                st.rerun()
     st.stop()
 
 if logged_in:
