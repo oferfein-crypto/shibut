@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+import altair as alt
 import streamlit as st
 
 import chat_store
@@ -54,6 +55,9 @@ st.markdown(
         padding-inline-start: 1.6rem !important;
         padding-inline-end: 0 !important;
         list-style-position: outside;
+    }
+    [data-testid="stVegaLiteChart"] {
+        direction: ltr;
     }
     </style>
     """,
@@ -192,13 +196,28 @@ def show_conversations():
                 for row in recent:
                     stamp = row.get("created_at")
                     if stamp:
-                        day = stamp.astimezone(ZoneInfo("Asia/Jerusalem")).date().isoformat()
+                        day = stamp.astimezone(ZoneInfo("Asia/Jerusalem")).date()
                         per_day[day] = per_day.get(day, 0) + 1
                 if per_day:
                     st.caption("שיחות חדשות לפי יום")
-                    days = sorted(per_day)
-                    st.bar_chart({"תאריך": days, "שיחות": [per_day[d] for d in days]},
-                                 x="תאריך", y="שיחות")
+                    daily_counts = [
+                        {"day": day.strftime("%d/%m/%Y"), "count": per_day[day]}
+                        for day in sorted(per_day)
+                    ]
+                    chart = alt.Chart(alt.Data(values=daily_counts)).mark_bar().encode(
+                        x=alt.X(
+                            "day:O",
+                            title="תאריך",
+                            sort=[row["day"] for row in daily_counts],
+                            axis=alt.Axis(labelAngle=0, labelOverlap="greedy", labelPadding=8),
+                        ),
+                        y=alt.Y("count:Q", title="שיחות", axis=alt.Axis(tickMinStep=1)),
+                        tooltip=[
+                            alt.Tooltip("day:O", title="תאריך"),
+                            alt.Tooltip("count:Q", title="שיחות"),
+                        ],
+                    )
+                    st.altair_chart(chart, width="stretch")
 
                 filter_mode = st.selectbox("סוג התחברות", ["הכול", "Google", "אורח"])
                 title_query = st.text_input("חיפוש בכותרת השיחה", "").strip().lower()
