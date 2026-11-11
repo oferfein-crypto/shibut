@@ -1026,27 +1026,36 @@ def generate_response_with_retry(client, messages, cache_name):
 
 
 # Text sharing: recipient receives only the chosen answer, not the whole conversation.
-def reply_share_actions(message):
-    if message.get("role") != "assistant":
+def reply_share_actions(answer, question=""):
+    if not answer:
         return
-    text = str(message.get("content", ""))
-    if not text:
-        return
-    share_url = "https://wa.me/?text=" + quote("תשובה מתוך שיבוט מחקר:\n\n" + text)
-    a, b = st.columns([1, 1])
-    with a:
-        if len(share_url) <= 12_000:  # App limit for the encoded share URL.
+
+    if question:
+        heading = "שאלה ותשובה מתוך שיבוט מחקר:"
+        text = f"שאלה:\n{question}\n\nתשובה:\n{answer}"
+        copy_label = "העתק שאלה ותשובה"
+    else:
+        heading = "תשובה מתוך שיבוט מחקר:"
+        text = answer
+        copy_label = "העתק תשובה"
+
+    share_url = "https://wa.me/?text=" + quote(f"{heading}\n\n{text}")
+    share, copy = st.columns(2)
+    with share:
+        if len(share_url) <= 20_000:  # App limit for the encoded share URL.
             st.link_button("שתף ב-WhatsApp", share_url, use_container_width=True)
         else:
-            st.caption("קישור השיתוף ארוך מדי. אפשר להעתיק את התשובה ולהדביק אותה בוואטסאפ.")
-    with b:
-        with st.popover("העתק תשובה", use_container_width=True):
-            st.caption("לחץ על סמל ההעתקה כדי להעתיק את התשובה במלואה.")
+            st.caption("קישור השיתוף ארוך מדי. אפשר להעתיק את הטקסט ולהדביק אותו בוואטסאפ.")
+    with copy:
+        with st.popover(copy_label, use_container_width=True):
+            st.caption("לחץ על סמל ההעתקה כדי להעתיק את הטקסט במלואו.")
             st.code(text, language=None, wrap_lines=True)
 
-
 # Render all messages, including the original slides and Plotly figures, on reruns.
+latest_question = ""
 for message in st.session_state.messages:
+    if message["role"] == "user":
+        latest_question = str(message.get("content", ""))
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
         if message.get("files"):
@@ -1057,7 +1066,7 @@ for message in st.session_state.messages:
             except Exception as exc:
                 st.caption(f"לא ניתן להציג מחדש את הגרף: {exc}")
         if message.get("role") == "assistant":
-            reply_share_actions(message)
+            reply_share_actions(str(message.get("content", "")), latest_question)
 
 
 if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
@@ -1126,7 +1135,7 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
                 }
                 st.session_state.messages.append(assistant_message)
                 queue_for_storage(assistant_message)
-                reply_share_actions(assistant_message)
+                reply_share_actions(bot_reply, user_input)
                 if st.session_state.pending_messages:
                     st.warning("ההודעות עדיין לא נשמרו במסד הנתונים. השאר את הדף פתוח.")
             except Exception as exc:
