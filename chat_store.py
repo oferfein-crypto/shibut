@@ -161,9 +161,38 @@ def recent_threads(db, limit=250):
     return [{"id": d.id, **d.to_dict()} for d in q.stream()]
 
 
-def all_threads(db):
+def _lecturer_archive_settings(db):
+    return db.collection("shibut_settings").document("lecturer_archive")
+
+
+def lecturer_archive_cutoff(db):
+    """Timestamp through which conversations are excluded from the general archive."""
+    snapshot = _lecturer_archive_settings(db).get()
+    return (snapshot.to_dict() or {}).get("cleared_at")
+
+
+def clear_lecturer_archive(db, expected_cutoff):
+    """Reset the general archive without modifying any account's conversation records."""
+    ref = _lecturer_archive_settings(db)
+
+    @firestore.transactional
+    def clear(transaction):
+        snapshot = ref.get(transaction=transaction)
+        if (snapshot.to_dict() or {}).get("cleared_at") != expected_cutoff:
+            return False
+        transaction.set(ref, {"cleared_at": firestore.SERVER_TIMESTAMP}, merge=True)
+        return True
+
+    return clear(db.transaction())
+
+
+def all_threads(db, *, after=None):
     """Admin only. Might be expensive on a large Firestore dataset."""
-    for doc in _root(db).stream():
+    query = _root(db)
+    if after is not None:
+        from google.cloud.firestore_v1.base_query import FieldFilter
+        query = query.where(filter=FieldFilter("created_at", ">", after))
+    for doc in query.stream():
         yield {"id": doc.id, **doc.to_dict()}
 
 
