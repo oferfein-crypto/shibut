@@ -114,6 +114,29 @@ def get_chat_db(credential_json):
     return chat_store.firestore_client(credential_json)
 
 
+@st.dialog("ריקון מאגר השיחות הכללי")
+def confirm_archive_clear(chat_db, cutoff):
+    st.warning(
+        "כל השיחות הנוכחיות יוסרו מלוח המרצה ומהייצוא הכללי. "
+        "הסטודנטים ימשיכו לראות את השיחות ששמרו בחשבון שלהם. "
+        "נתוני המקור יישארו ב-Firestore. לא ניתן לבטל את הריקון דרך ממשק המרצה."
+    )
+    confirm, cancel = st.columns(2)
+    if cancel.button("ביטול"):
+        st.rerun()
+    if confirm.button("כן, רוקן את המאגר הכללי", type="primary"):
+        try:
+            cleared = chat_store.clear_lecturer_archive(chat_db, cutoff)
+        except Exception:
+            st.error("לא ניתן היה לרוקן את המאגר. רענן את הלוח ובדוק את מצבו לפני ניסיון נוסף.")
+            return
+        if not cleared:
+            st.warning("המאגר כבר רוקן מאז פתיחת החלון. לחץ על ביטול כדי לרענן את הלוח.")
+            return
+        st.session_state.admin_archive_cleared = True
+        st.rerun()
+
+
 def show_conversations():
     credential_json = st.secrets.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")
     try:
@@ -125,11 +148,22 @@ def show_conversations():
         st.error("Firestore אינו מחובר. הגדר FIREBASE_SERVICE_ACCOUNT_JSON ב-Secrets.")
     else:
         try:
+            cutoff = chat_store.lecturer_archive_cutoff(chat_db)
+            if cutoff != st.session_state.get("admin_archive_cutoff"):
+                st.session_state.admin_archive_cutoff = cutoff
+                for key in ("admin_export_data", "admin_content_results",
+                            "admin_content_search_term", "admin_content_filter",
+                            "admin_date_start", "admin_date_end", "admin_thread_select"):
+                    st.session_state.pop(key, None)
+            if st.session_state.pop("admin_archive_cleared", False):
+                st.success("מאגר השיחות הכללי רוקן. שיחות חדשות יופיעו כאן.")
             recent = sorted(
-                chat_store.all_threads(chat_db),
+                chat_store.all_threads(chat_db, after=cutoff),
                 key=lambda row: row.get("updated_at") or datetime.min.replace(tzinfo=timezone.utc),
                 reverse=True,
             )
+            if recent and st.button("רוקן את מאגר השיחות הכללי"):
+                confirm_archive_clear(chat_db, cutoff)
             total_recent = len(recent)
             google_recent = sum(row.get("auth_mode") == "google" for row in recent)
             guest_recent = total_recent - google_recent
@@ -218,7 +252,7 @@ def show_conversations():
                             file_name=f"shibut_thread_{chosen}.csv",
                             mime="text/csv",
                         )
-            if st.button("הכן ייצוא של כל השיחות (CSV)", key="admin_export_all"):
+            if recent and st.button("הכן ייצוא של כל השיחות (CSV)", key="admin_export_all"):
                 with st.spinner("מייצא את כל השיחות השמורות; פעולה זו צורכת קריאות Firestore..."):
                     st.session_state.admin_export_data = chat_store.transcript_csv(
                         chat_db, recent
