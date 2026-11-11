@@ -25,6 +25,22 @@ st.markdown(
         direction: rtl;
         text-align: right;
     }
+    [data-testid="stDialog"] [role="dialog"] {
+        direction: rtl;
+        text-align: right;
+    }
+    [data-testid="stDialog"] [role="dialog"] h2 {
+        justify-content: flex-start;
+        padding-inline-end: 3.5rem;
+    }
+    [data-testid="stDialog"] [role="dialog"] [data-testid="stAlert"] p {
+        direction: rtl;
+        text-align: right;
+    }
+    [data-testid="stDialog"] [role="dialog"] button[aria-label="Close"] {
+        left: 1.5rem;
+        right: auto;
+    }
     /* Keep transcript text and list markers aligned at every nesting level. */
     .stChatMessage [data-testid="stMarkdownContainer"],
     .stChatMessage [data-testid="stMarkdownContainer"] :is(
