@@ -118,6 +118,25 @@ st.markdown(
         direction: rtl;
         text-align: right;
     }
+    [data-testid="stSidebarUserContent"] {
+        padding-bottom: 1rem;
+    }
+    [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] {
+        gap: 0.5rem;
+    }
+    [data-testid="stSidebarUserContent"] p {
+        line-height: 1.35;
+    }
+    [data-testid="stSidebarUserContent"] h3 {
+        padding-block: 0;
+        margin-block: 0;
+    }
+    [data-testid="stSidebarUserContent"] hr {
+        margin-block: 0.25rem;
+    }
+    [data-testid="stSidebarUserContent"] [data-testid="stAlertContainer"] {
+        padding: 0.5rem 0.75rem;
+    }
     [data-testid="stSidebar"] [data-baseweb="select"],
     [data-testid="stSidebar"] button {
         direction: rtl;
@@ -409,7 +428,7 @@ if "learning_mode" not in st.session_state:
 
 with st.sidebar:
     st.markdown("---")
-    st.subheader("למידה ממוקדת")
+    st.subheader("מצב למידה")
     learning_mode = st.selectbox(
         "איך תרצה ללמוד?",
         options=tuple(LEARNING_MODE_LABELS),
@@ -438,7 +457,7 @@ def make_client():
 
 
 st.sidebar.markdown("---")
-st.sidebar.title("📁 קבצים להעלאה")
+st.sidebar.subheader("📁 קבצים להעלאה")
 exam_files = st.sidebar.file_uploader(
     "העלה מבחן, תרגיל, שאלה או כל קובץ אחר",
     type=["pdf", "png", "jpg", "jpeg", "txt"],
