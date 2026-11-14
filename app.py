@@ -58,6 +58,17 @@ st.markdown(
         direction: rtl !important;
         text-align: right !important;
     }
+    /* Keep the table's first column on the right and align every cell. */
+    .stChatMessage [data-testid="stMarkdownContainer"] table {
+        direction: rtl !important;
+        margin-inline-start: 0;
+        margin-inline-end: auto;
+    }
+    .stChatMessage [data-testid="stMarkdownContainer"] table :is(th, td),
+    .st-key-learning_mode_status {
+        direction: rtl !important;
+        text-align: right !important;
+    }
     /* Move list markers and indentation to the right, including sublists. */
     .stChatMessage [data-testid="stMarkdownContainer"] :is(ul, ol) {
         padding-left: 0 !important;
@@ -408,6 +419,10 @@ with st.sidebar:
     )
     if st.session_state.get("learning_preference_error"):
         st.warning(st.session_state.learning_preference_error)
+
+with st.container(key="learning_mode_status"):
+    mode_label = LEARNING_MODE_LABELS[learning_mode]
+    st.info(f"**מצב הלמידה שלך: {mode_label}.** אפשר לשנות אותו בכל שלב בסרגל הימני.")
 
 if not st.secrets.get("GEMINI_API_KEY"):
     st.error("GEMINI_API_KEY אינו מוגדר ב-Secrets.")
