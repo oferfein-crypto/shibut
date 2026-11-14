@@ -20,6 +20,7 @@ from google.cloud import firestore
 
 
 COLLECTION = "shibut_conversations_v1"
+LEARNING_MODES = ("regular", "short", "step_by_step", "practice")
 
 
 def account_key(issuer: str, google_sub: str, pepper: str) -> str:
@@ -53,6 +54,24 @@ def fresh_guest_owner() -> str:
 
 def _root(db):
     return db.collection(COLLECTION)
+
+
+def _learning_preference_ref(db, owner_key):
+    if not owner_key.startswith("google_"):
+        raise PermissionError("שמירת העדפה זמינה לחשבון Google מחובר בלבד.")
+    return db.collection("shibut_learning_preferences_v1").document(owner_key)
+
+
+def read_learning_preference(db, owner_key):
+    doc = _learning_preference_ref(db, owner_key).get()
+    mode = (doc.to_dict() or {}).get("learning_mode")
+    return mode if mode in LEARNING_MODES else "regular"
+
+
+def save_learning_preference(db, owner_key, mode):
+    if mode not in LEARNING_MODES:
+        raise ValueError("invalid learning mode")
+    _learning_preference_ref(db, owner_key).set({"learning_mode": mode}, merge=True)
 
 
 def _thread_ref(db, thread_id):
