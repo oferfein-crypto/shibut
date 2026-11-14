@@ -360,10 +360,28 @@ LEARNING_MODE_LABELS = {
 }
 
 
+def _learning_preference_ref(db, owner_key):
+    if not owner_key.startswith("google_"):
+        raise PermissionError("שמירת העדפה זמינה לחשבון Google מחובר בלבד.")
+    return db.collection("shibut_learning_preferences_v1").document(owner_key)
+
+
+def read_learning_preference(db, owner_key):
+    doc = _learning_preference_ref(db, owner_key).get()
+    mode = (doc.to_dict() or {}).get("learning_mode")
+    return mode if mode in LEARNING_MODE_LABELS else "regular"
+
+
+def save_learning_preference(db, owner_key, mode):
+    if mode not in LEARNING_MODE_LABELS:
+        raise ValueError("invalid learning mode")
+    _learning_preference_ref(db, owner_key).set({"learning_mode": mode}, merge=True)
+
+
 def save_selected_learning_mode():
     if logged_in and chat_db is not None:
         try:
-            chat_store.save_learning_preference(chat_db, owner_key, st.session_state.learning_mode)
+            save_learning_preference(chat_db, owner_key, st.session_state.learning_mode)
         except Exception:
             st.session_state.learning_preference_error = "לא ניתן לשמור את ההעדפה בחשבון כרגע."
         else:
@@ -374,7 +392,7 @@ if "learning_mode" not in st.session_state:
     st.session_state.learning_mode = "regular"
     if logged_in and chat_db is not None:
         try:
-            st.session_state.learning_mode = chat_store.read_learning_preference(chat_db, owner_key)
+            st.session_state.learning_mode = read_learning_preference(chat_db, owner_key)
         except Exception:
             st.session_state.learning_preference_error = "לא ניתן לטעון את ההעדפה מהחשבון כרגע."
 
@@ -383,7 +401,7 @@ with st.sidebar:
     st.subheader("למידה ממוקדת")
     learning_mode = st.selectbox(
         "איך תרצה ללמוד?",
-        options=chat_store.LEARNING_MODES,
+        options=tuple(LEARNING_MODE_LABELS),
         format_func=LEARNING_MODE_LABELS.__getitem__,
         key="learning_mode",
         on_change=save_selected_learning_mode,
