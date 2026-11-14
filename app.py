@@ -122,17 +122,13 @@ st.markdown(
         padding-bottom: 1rem;
     }
     [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] {
-        gap: 0.5rem;
+        gap: 0.75rem;
     }
     [data-testid="stSidebarUserContent"] p {
-        line-height: 1.35;
-    }
-    [data-testid="stSidebarUserContent"] h3 {
-        padding-block: 0;
-        margin-block: 0;
+        line-height: 1.45;
     }
     [data-testid="stSidebarUserContent"] hr {
-        margin-block: 0.25rem;
+        margin-block: 0.5rem;
     }
     [data-testid="stSidebarUserContent"] [data-testid="stAlertContainer"] {
         padding: 0.5rem 0.75rem;
