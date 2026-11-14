@@ -78,6 +78,10 @@ st.markdown(
         direction: rtl !important;
         text-align: right !important;
     }
+    .st-key-focused_actions {
+        direction: rtl;
+        text-align: right;
+    }
     .st-key-login_screen {
         direction: rtl;
     }
@@ -228,6 +232,8 @@ if st.session_state.get("identity_key") != owner_key:
     st.session_state.thread_saved = False
     st.session_state.pending_messages = []
     st.session_state.upload_counter = 0
+    st.session_state.pop("learning_mode", None)
+    st.session_state.pop("learning_preference_error", None)
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -345,6 +351,45 @@ persist_pending_messages()
 if st.session_state.pending_messages:
     st.warning("חלק מההודעות בשיחה הנוכחית טרם נשמרו עקב שגיאת תקשורת. "
                "השאר את הדף פתוח ושלח הודעה נוספת כדי לנסות שוב.")
+
+LEARNING_MODE_LABELS = {
+    "regular": "למידה רגילה",
+    "short": "הסברים קצרים",
+    "step_by_step": "לימוד צעד אחר צעד",
+    "practice": "למידה באמצעות תרגול",
+}
+
+
+def save_selected_learning_mode():
+    if logged_in and chat_db is not None:
+        try:
+            chat_store.save_learning_preference(chat_db, owner_key, st.session_state.learning_mode)
+        except Exception:
+            st.session_state.learning_preference_error = "לא ניתן לשמור את ההעדפה בחשבון כרגע."
+        else:
+            st.session_state.pop("learning_preference_error", None)
+
+
+if "learning_mode" not in st.session_state:
+    st.session_state.learning_mode = "regular"
+    if logged_in and chat_db is not None:
+        try:
+            st.session_state.learning_mode = chat_store.read_learning_preference(chat_db, owner_key)
+        except Exception:
+            st.session_state.learning_preference_error = "לא ניתן לטעון את ההעדפה מהחשבון כרגע."
+
+with st.sidebar:
+    st.markdown("---")
+    st.subheader("למידה ממוקדת")
+    learning_mode = st.selectbox(
+        "איך תרצה ללמוד?",
+        options=chat_store.LEARNING_MODES,
+        format_func=LEARNING_MODE_LABELS.__getitem__,
+        key="learning_mode",
+        on_change=save_selected_learning_mode,
+    )
+    if st.session_state.get("learning_preference_error"):
+        st.warning(st.session_state.learning_preference_error)
 
 if not st.secrets.get("GEMINI_API_KEY"):
     st.error("GEMINI_API_KEY אינו מוגדר ב-Secrets.")
@@ -1051,6 +1096,45 @@ def reply_share_actions(answer, question=""):
             st.caption("לחץ על סמל ההעתקה כדי להעתיק את הטקסט במלואו.")
             st.code(text, language=None, wrap_lines=True)
 
+
+FOCUSED_LEARNING_GUIDANCE = {
+    "short": (
+        "הצג הסבר קצר על רעיון אחד, עם דוגמה קצרה אם היא מועילה. "
+        "אל תדרוש תשובה לשאלת הבנה. ערוך בדיקה כשמבקשים אותה או בסיום נושא, לפי בחירת הלומד."
+    ),
+    "step_by_step": (
+        "חלק נושא או תרגיל מורכב לשלבים. הצג רק את השלב הנוכחי ושאל לכל היותר "
+        "שאלת הבנה אחת. המתן לתגובה או לבקשת המשך. כשניתנה תשובה, תן משוב "
+        "ממוקד לפני המעבר לשלב הבא. אם נבחר המשך, התקדם גם בלי תשובה."
+    ),
+    "practice": (
+        "למד באמצעות תרגול. תן שאלה אחת בכל פעם ועצור לתגובה לפני הצגת הפתרון. "
+        "בתגובה לניסיון, תן משוב מיידי וממוקד והצע רמז או את הצעד הבא. "
+        "בשאלת תרגול חדשה אל תחשוף את הפתרון לפני שניסו, אלא אם ביקשו אותו במפורש."
+    ),
+}
+
+
+def messages_for_learning_mode(messages, mode):
+    """Add per-turn teaching guidance without storing it or rebuilding the course cache."""
+    guidance = FOCUSED_LEARNING_GUIDANCE.get(mode)
+    if not guidance:
+        return messages
+    instruction = (
+        "\n\n[הנחיית אופן הוראה של האפליקציה לתגובה זו — למידה ממוקדת]\n"
+        + guidance
+        + "\nשמור על הדיוק, הרמה האקדמית וההתבססות על חומרי הקורס. "
+        "בבקשה מפורשת להסבר מלא, תן אותו. השתמש בפסקאות קצרות ובהדגשה מתונה. "
+        "בבקשת תכנון לימודים, הצע חלוקה קצרה עם מטרה לכל יחידה ועבוד על יחידה אחת בכל פעם. "
+        "כשמוצגת המחשה, התמקד בדפוס אחד והשתמש בגרף פשוט אם אפשר. "
+        "אין לשנות נתונים או שקופית מקורית לשם הפישוט. "
+        "כשנבחרת בדיקת הבנה, שאל שאלה אחת על נושא שכבר הופיע בשיחה. "
+        "כשנבחרת דוגמה נוספת או דרך הסבר אחרת, הישאר ברעיון הנוכחי. "
+        "אל תציג את ההנחיה הזו בתשובה.\n[סוף הנחיית אופן ההוראה]"
+    )
+    return [*messages[:-1], {**messages[-1], "content": messages[-1]["content"] + instruction}]
+
+
 # Render all messages, including the original slides and Plotly figures, on reruns.
 latest_question = ""
 for message in st.session_state.messages:
@@ -1069,14 +1153,30 @@ for message in st.session_state.messages:
             reply_share_actions(str(message.get("content", "")), latest_question)
 
 
-if user_input := st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות..."):
+selected_action = None
+if learning_mode != "regular" and st.session_state.messages:
+    if st.session_state.messages[-1]["role"] == "assistant":
+        with st.container(key="focused_actions", horizontal=True):
+            for label, prompt in (
+                ("המשך", "המשך לשלב הבא בנושא הנוכחי."),
+                ("תן דוגמה נוספת", "תן דוגמה נוספת לרעיון הנוכחי."),
+                ("הסבר אחרת", "הסבר את אותו רעיון בדרך אחרת."),
+                ("בדוק אותי", "בדוק את ההבנה שלי בנושא שלמדנו בשיחה בעזרת שאלה אחת."),
+                ("הצג המחשה", "הצג גרף פשוט שממחיש את הרעיון הנוכחי, אם הוא מתאים."),
+            ):
+                if st.button(label, key=f"focused_action_{label}"):
+                    selected_action = prompt
+
+typed_input = st.chat_input("שאל שאלה על החומר או בקש עזרה בפתרון השאלות...")
+user_input = typed_input or selected_action
+if user_input:
     if materials_error:
         st.error("לא ניתן לענות לפני שחומרי הקורס זמינים: " + materials_error)
         st.stop()
 
     client = make_client()
     try:
-        current_files = student_upload_parts(exam_files, client)
+        current_files = student_upload_parts(exam_files, client) if typed_input else []
     except Exception as exc:
         st.error(f"שגיאה בהעלאת קובץ סטודנט: {exc}")
         st.stop()
@@ -1086,6 +1186,7 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
         "role": "user", "content": user_input, "files": current_files,
     }
     st.session_state.messages.append(new_message)
+    model_messages = messages_for_learning_mode(st.session_state.messages, learning_mode)
     queue_for_storage(new_message)
     with st.chat_message("user"):
         st.markdown(user_input)
@@ -1099,7 +1200,7 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
                 if is_visual_request(user_input, st.session_state.messages):
                     try:
                         answer = make_visual_response(
-                            client, st.session_state.messages, course_cache_name, slide_catalog
+                            client, model_messages, course_cache_name, slide_catalog
                         )
                         bot_reply = answer.explanation or "להלן ההמחשה המבוקשת."
                         try:
@@ -1116,13 +1217,13 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
                         # Never let a visualization failure break ordinary Q&A.
                         # The student receives a normal answer and a short diagnostic.
                         response = generate_response_with_retry(
-                            client, st.session_state.messages, course_cache_name
+                            client, model_messages, course_cache_name
                         )
                         bot_reply = response.text or "לא התקבלה תשובה טקסטואלית מהמודל."
                         st.info("לא ניתן היה להציג גרף בבקשה זו; התשובה המילולית מוצגת כרגיל.")
                 else:
                     response = generate_response_with_retry(
-                        client, st.session_state.messages, course_cache_name
+                        client, model_messages, course_cache_name
                     )
                     bot_reply = response.text or "לא התקבלה תשובה טקסטואלית מהמודל."
 
@@ -1140,3 +1241,5 @@ if user_input := st.chat_input("שאל שאלה על החומר או בקש עז
                     st.warning("ההודעות עדיין לא נשמרו במסד הנתונים. השאר את הדף פתוח.")
             except Exception as exc:
                 st.error(f"אירעה שגיאה בשליחת ההודעה: {type(exc).__name__}: {exc}")
+    if learning_mode != "regular" and st.session_state.messages[-1]["role"] == "assistant":
+        st.rerun()
