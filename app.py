@@ -1025,6 +1025,64 @@ def generate_response_with_retry(client, messages, cache_name):
         raise
 
 
+# Temporary benchmark, accessible only with the one-time benchmark code.
+if hashlib.sha256(st.query_params.get("cache_benchmark", "").encode()).hexdigest() == "b2d922ded309e6da79684a3f9c386b5da450835846b7be25b33c51afb866a481":
+    st.subheader("מדידת זמני תגובה")
+    if materials_error or not course_cache_name:
+        st.error("חומרי הקורס או המטמון אינם זמינים למדידה.")
+        st.stop()
+    if st.button("התחל מדידה"):
+        client = make_client()
+        questions = [
+            "מהו תוקף מבחין?",
+            "מה ההבדל בין דגימה מקרית פשוטה לדגימה שיטתית?",
+            "מה ההבדל בין תוקף פנימי לתוקף חיצוני?",
+            "מה ההבדל בין מהימנות לתוקף של כלי מדידה?",
+            "מה ההבדל בין הגדרה נומינלית להגדרה אופרציונלית?",
+            "מה ההבדל בין מערך בין-נבדקי למערך תוך-נבדקי?",
+        ]
+        results = []
+        with st.spinner("מודד 12 תשובות"):
+            new_cache = None
+            try:
+                # Use the application's normal cache creation path with a unique fingerprint.
+                started = time.perf_counter()
+                new_cache, _ = get_or_create_course_cache(
+                    uuid.uuid4().hex, system_instruction, course_resources
+                )
+                creation_seconds = round(time.perf_counter() - started, 3)
+            finally:
+                if new_cache:
+                    try:
+                        client.caches.delete(name=new_cache)
+                    except Exception:
+                        st.warning("מטמון המדידה יפוג לפי זמן התפוגה הרגיל.")
+            st.write({"cache_creation_and_lookup_seconds": creation_seconds if new_cache else None})
+            for index, question in enumerate(questions, start=1):
+                messages = [{"role": "user", "content": question + " ענה בעברית בשניים עד שלושה משפטים."}]
+                modes = [("explicit", course_cache_name), ("no_explicit", None)]
+                if index % 2 == 0:
+                    modes.reverse()
+                for mode, cache in modes:
+                    started = time.perf_counter()
+                    try:
+                        response = generate_response(client, messages, cache)
+                    except Exception as exc:
+                        results.append({"question": index, "mode": mode, "error": type(exc).__name__})
+                        continue
+                    seconds = round(time.perf_counter() - started, 3)
+                    usage = response.usage_metadata
+                    results.append({
+                        "question": index, "mode": mode, "seconds": seconds,
+                        "cached": getattr(usage, "cached_content_token_count", None) or 0,
+                        "input": getattr(usage, "prompt_token_count", None),
+                        "output": getattr(usage, "candidates_token_count", None),
+                        "thoughts": getattr(usage, "thoughts_token_count", None),
+                    })
+        st.json(results)
+    st.stop()
+
+
 # Text sharing: recipient receives only the chosen answer, not the whole conversation.
 def reply_share_actions(answer, question=""):
     if not answer:
